@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'" />
+  <title>Auren</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="onboarding" class="onboarding hidden">
+    <div class="onboarding-card">
+      <div class="onboarding-step" id="ob-step-1">
+        <h1>Welcome to Auren</h1>
+        <p>Auren blocks specific websites from being reached by anything on this computer &mdash; including AI agents &mdash; until you turn it off with your fingerprint or passcode.</p>
+        <p>It works below every browser and app, at the network level, so it can&rsquo;t be skipped by opening a different browser.</p>
+        <button class="primary" id="ob-next-1" type="button">Next</button>
+      </div>
+      <div class="onboarding-step hidden" id="ob-step-2">
+        <h1>Your block list</h1>
+        <p>Add a site below and Auren makes it unreachable everywhere on this Mac. Changes apply instantly &mdash; no save button.</p>
+        <p>Turning protection <strong>off</strong> requires your fingerprint or device passcode, so an AI agent can&rsquo;t turn it off on its own.</p>
+        <button class="primary" id="ob-finish" type="button">Start</button>
+      </div>
+    </div>
+  </div>
+
+  <main>
+    <header>
+      <h1>Auren</h1>
+      <p class="tagline">System-wide site blocking for AI agents</p>
+    </header>
+
+    <section class="card protection">
+      <div class="protection-row">
+        <div class="protection-text">
+          <h2>Protection Mode</h2>
+          <p id="mode-hint">Loading&hellip;</p>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="mode-toggle" aria-label="Protection Mode" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="note">Turning protection off requires your fingerprint or device passcode &mdash; so an AI agent can&rsquo;t turn it off on its own.</p>
+      <p class="error hidden" id="mode-error"></p>
+    </section>
+
+    <section class="card">
+      <h2>Sites your AI agent can&rsquo;t visit</h2>
+      <form id="add-form">
+        <input id="domain-input" type="text" placeholder="bank.com, mail.google.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+        <button class="primary" id="add-btn" type="submit">Block</button>
+      </form>
+      <p class="error hidden" id="add-error"></p>
+      <ul id="block-list" class="block-list"></ul>
+      <p class="empty hidden" id="block-empty">No sites blocked yet. Add one above to make it unreachable on this Mac.</p>
+    </section>
+
+    <section class="card">
+      <h2>Recent activity</h2>
+      <ul id="activity-list" class="activity-list"></ul>
+      <p class="empty hidden" id="activity-empty">No activity yet.</p>
+      <p class="note">Only the site name, time, and outcome are recorded &mdash; never any of your data.</p>
+    </section>
+
+    <footer class="footer-note">
+      Auren blocks websites at the network level on this Mac. It is a cooperative guardrail, not a guarantee &mdash; the README spells out exactly what it can and can&rsquo;t do.
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

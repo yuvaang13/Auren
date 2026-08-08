@@ -1,0 +1,16 @@
+# Node
+node_modules/
+
+# Test artifacts
+test/.artifacts/
+
+# OS cruft
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Local runtime state (created by the app / daemon at runtime)
+*.tmp
