@@ -12,11 +12,34 @@ function showError(id, msg) {
   el.classList.remove('hidden');
 }
 
+const ICON_LINK = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 12a2.5 2.5 0 003.6 3.4l2.5-2.5a2.5 2.5 0 10-3.5-3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 12a2.5 2.5 0 00-3.6-3.4l-2.5 2.5a2.5 2.5 0 103.5 3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_BLOCK = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.7"/><path d="M5.6 5.6l12.8 12.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
+const ICON_TOGGLE = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.5 8.6a6.5 6.5 0 1011 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
+const ICON_DAEMON = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 11-8 11.3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M3.5 15v-4.5H8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function updateStatusPill(on) {
+  const pill = $('status-pill');
+  const label = $('status-label');
+  pill.classList.remove('on', 'off', 'warn');
+  if (on && state.enforcement) {
+    pill.classList.add('on');
+    label.textContent = 'Protected';
+  } else if (on) {
+    pill.classList.add('warn');
+    label.textContent = 'Starting\u2026';
+  } else {
+    pill.classList.add('off');
+    label.textContent = 'Off';
+  }
+}
+
 function render() {
   const on = state.mode === 'on';
   const toggle = $('mode-toggle');
   toggle.checked = on;
   toggle.disabled = busy;
+
+  updateStatusPill(on);
 
   $('mode-hint').textContent = on
     ? (state.enforcement
@@ -29,14 +52,16 @@ function render() {
   $('block-empty').classList.toggle('hidden', state.blocklist.length > 0);
   for (const d of state.blocklist) {
     const li = document.createElement('li');
-    const span = document.createElement('span');
-    span.textContent = d;
+    li.className = 'block-item';
+    li.innerHTML = ICON_LINK + '<span class="domain"></span>';
+    li.querySelector('.domain').textContent = d;
     const btn = document.createElement('button');
     btn.className = 'remove-btn';
+    btn.type = 'button';
     btn.textContent = '\u00d7';
     btn.setAttribute('aria-label', 'Remove ' + d);
     btn.addEventListener('click', () => api.removeDomain(d));
-    li.append(span, btn);
+    li.append(btn);
     list.append(li);
   }
 
@@ -46,7 +71,12 @@ function render() {
   $('activity-empty').classList.toggle('hidden', items.length > 0);
   for (const e of items) {
     const li = document.createElement('li');
-    li.textContent = e.text || e.note || e.outcome || e.domain || '';
+    const kind = e.kind || 'event';
+    li.className = 'activity-item kind-' + kind;
+    li.innerHTML =
+      (kind === 'block' ? ICON_BLOCK : kind === 'toggle' ? ICON_TOGGLE : ICON_DAEMON) +
+      '<span class="activity-text"></span>';
+    li.querySelector('.activity-text').textContent = e.text || e.note || e.outcome || e.domain || '';
     act.append(li);
   }
 }

@@ -7,8 +7,22 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <svg width="0" height="0" aria-hidden="true">
+    <defs>
+      <linearGradient id="auren-grad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#34d399"/>
+        <stop offset="1" stop-color="#059669"/>
+      </linearGradient>
+    </defs>
+  </svg>
+
   <div id="onboarding" class="onboarding hidden">
     <div class="onboarding-card">
+      <svg class="ob-mark" viewBox="0 0 24 24" fill="none">
+        <path d="M12 2l8 3v6c0 5-3.4 9.2-8 11-4.6-1.8-8-6-8-11V5l8-3z" fill="url(#auren-grad)" opacity="0.18"/>
+        <path d="M12 2l8 3v6c0 5-3.4 9.2-8 11-4.6-1.8-8-6-8-11V5l8-3z" stroke="url(#auren-grad)" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M9 11.6l2.2 2.2 4.3-4.4" stroke="url(#auren-grad)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
       <div class="onboarding-step" id="ob-step-1">
         <h1>Welcome to Auren</h1>
         <p>Auren blocks specific websites from being reached by anything on this computer &mdash; including AI agents &mdash; until you turn it off with your fingerprint or passcode.</p>
@@ -25,15 +39,34 @@
   </div>
 
   <main>
-    <header>
-      <h1>Auren</h1>
-      <p class="tagline">System-wide site blocking for AI agents</p>
+    <header class="topbar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 24 24" fill="none">
+          <path d="M12 2l8 3v6c0 5-3.4 9.2-8 11-4.6-1.8-8-6-8-11V5l8-3z" fill="url(#auren-grad)" opacity="0.18"/>
+          <path d="M12 2l8 3v6c0 5-3.4 9.2-8 11-4.6-1.8-8-6-8-11V5l8-3z" stroke="url(#auren-grad)" stroke-width="1.6" stroke-linejoin="round"/>
+          <path d="M9 11.6l2.2 2.2 4.3-4.4" stroke="url(#auren-grad)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div class="brand-text">
+          <h1>Auren</h1>
+          <p class="tagline">System-wide site blocking for AI agents</p>
+        </div>
+      </div>
+      <span class="status-pill" id="status-pill" role="status" aria-live="polite">
+        <span class="dot"></span>
+        <span id="status-label">Loading&hellip;</span>
+      </span>
     </header>
 
     <section class="card protection">
       <div class="protection-row">
         <div class="protection-text">
-          <h2>Protection Mode</h2>
+          <h2>
+            <svg class="card-icon" viewBox="0 0 24 24" fill="none">
+              <path d="M12 3l7 2.6v5.2c0 4.4-3 8.1-7 9.7-4-1.6-7-5.3-7-9.7V5.6L12 3z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+              <path d="M9 11.8l2.1 2.1 4-4.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Protection Mode
+          </h2>
           <p id="mode-hint">Loading&hellip;</p>
         </div>
         <label class="switch">
@@ -46,7 +79,13 @@
     </section>
 
     <section class="card">
-      <h2>Sites your AI agent can&rsquo;t visit</h2>
+      <h2>
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none">
+          <path d="M9.5 12a2.5 2.5 0 003.6 3.4l2.5-2.5a2.5 2.5 0 10-3.5-3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M14.5 12a2.5 2.5 0 00-3.6-3.4l-2.5 2.5a2.5 2.5 0 103.5 3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Sites your AI agent can&rsquo;t visit
+      </h2>
       <form id="add-form">
         <input id="domain-input" type="text" placeholder="bank.com, mail.google.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
         <button class="primary" id="add-btn" type="submit">Block</button>
@@ -57,7 +96,13 @@
     </section>
 
     <section class="card">
-      <h2>Recent activity</h2>
+      <h2>
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M12 7.5V12l3 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Recent activity
+      </h2>
       <ul id="activity-list" class="activity-list"></ul>
       <p class="empty hidden" id="activity-empty">No activity yet.</p>
       <p class="note">Only the site name, time, and outcome are recorded &mdash; never any of your data.</p>

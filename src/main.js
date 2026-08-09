@@ -10,7 +10,7 @@
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, nativeTheme } = require('electron');
 
 const config = require('./core/config');
 const activity = require('./core/activity');
@@ -25,6 +25,9 @@ const STATE_FILE = '/Library/Application Support/Auren/state.json';
 
 app.setName('Auren');
 app.setPath('userData', USER_DATA);
+
+// Auren ships a dark UI; keep native chrome and dialogs consistent with it.
+nativeTheme.themeSource = 'dark';
 
 let mainWindow = null;
 let lastSent = '';
@@ -91,7 +94,8 @@ function createWindow() {
     minWidth: 560,
     minHeight: 620,
     title: 'Auren',
-    backgroundColor: '#f5f4f0',
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#0a0d12',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
