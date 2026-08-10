@@ -66,8 +66,10 @@ should always be able to increase protection.
 
 Turning protection **off** requires an OS-native biometric or device-passcode
 check (macOS Touch ID, with the standard macOS password prompt as the fallback
-on machines without Touch ID). The reason is simple: an AI agent that can click
-buttons must not be able to click protection off on its own.
+on machines without Touch ID). After a successful check, the block list stays
+active for a **10-second cooldown** before protection actually turns off, so a
+human has a moment to confirm the unlock. The reason is simple: an AI agent
+that can click buttons must not be able to click protection off on its own.
 
 **Privacy invariant:** Auren only ever calls the OS's authentication APIs and
 receives a **pass/fail result**. It never sees, stores, or transmits any
@@ -97,7 +99,8 @@ to add sites), then lands you on the block-list screen.
 
 When you turn **Protection Mode ON** for the first time, macOS will ask for
 your password once — that installs the background DNS service. Every ON/OFF
-after that is instant; only turning OFF asks for your fingerprint or passcode.
+after that is instant; only turning OFF asks for your fingerprint or passcode
+and then waits out a 10-second cooldown before sites become reachable.
 
 > **Note for machines with TLS/certificate restrictions:** the Electron binary
 > is downloaded over HTTPS from GitHub. If `npm install` fails to fetch it

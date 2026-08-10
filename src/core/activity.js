@@ -16,7 +16,8 @@ const path = require('path');
 // kinds: 'block' (a lookup was refused), 'toggle' (protection mode change),
 //        'daemon' (resolver lifecycle / errors)
 // outcome: for block -> 'blocked' | 'allowed'; for toggle -> 'on' | 'off' |
-//          'off_failed' | 'off_cancelled'; for daemon -> 'started' | 'stopped'
+//          'off_pending' (verified, waiting out the cooldown) | 'off_failed' |
+//          'off_cancelled'; for daemon -> 'started' | 'stopped'
 //          | 'error' | 'dns_applied' | 'dns_restored'
 function makeEntry(kind, outcome, domain, note) {
   return { ts: new Date().toISOString(), kind, outcome, domain: domain || null, note: note || null };
@@ -50,6 +51,7 @@ function toPlainText(entry) {
     case 'toggle':
       if (entry.outcome === 'on') return `Protection turned on \u00b7 ${time}`;
       if (entry.outcome === 'off') return `Protection turned off (verified by fingerprint or passcode) \u00b7 ${time}`;
+      if (entry.outcome === 'off_pending') return `Protection-off verified \u2014 sites stay blocked for 10 seconds \u00b7 ${time}`;
       if (entry.outcome === 'off_failed') return `Protection-off request did not pass verification \u00b7 ${time}`;
       if (entry.outcome === 'off_cancelled') return `Protection-off request cancelled \u00b7 ${time}`;
       if (entry.outcome === 'on_failed') return `Protection-on request did not finish (background service setup declined) \u00b7 ${time}`;

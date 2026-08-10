@@ -56,11 +56,16 @@ dig @127.0.0.1 example.com          # -> status: NOERROR, an A record
 - [ ] With Protection ON, flip the toggle **OFF**.
 - [ ] macOS shows a Touch ID prompt (or, on machines without Touch ID, the
       standard password prompt). Complete it.
-- [ ] The toggle goes OFF and the status reads "Protection is OFF".
+- [ ] The toggle stays ON but disabled for **10 seconds** and the status reads
+      something like "Verified. Protection stays ON … sites will unlock in Ns."
+- [ ] While the countdown runs, a blocked site is still unreachable.
+- [ ] After ~10 seconds the toggle flips OFF on its own and the status reads
+      "Protection is OFF"; the sites are now reachable.
 - [ ] Flip OFF again but **cancel** the prompt. Protection stays ON and the
       activity log shows the request was cancelled.
 - [ ] Check `~/Library/Application Support/Auren/activity.jsonl` — toggle
-      events have a timestamp and outcome. Confirm there is **no** credential
+      events have a timestamp and outcome (`off_pending` when the cooldown
+      starts, `off` when it completes). Confirm there is **no** credential
       or biometric data anywhere in that file.
 
 ## 6. Protection survives app restart

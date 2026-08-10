@@ -3,8 +3,30 @@
 const api = window.auren;
 const $ = (id) => document.getElementById(id);
 
-let state = { mode: 'off', blocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin' };
+let state = { mode: 'off', blocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0 };
 let busy = false;
+let countdownTimer = null;
+
+function cooldownUntil() {
+  const u = Number(state.modeCooldownUntil) || 0;
+  return u > Date.now() ? u : 0;
+}
+
+function syncCountdown() {
+  const active = cooldownUntil() > 0;
+  if (active && !countdownTimer) {
+    countdownTimer = setInterval(() => {
+      if (cooldownUntil() <= 0) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+      }
+      render();
+    }, 250);
+  } else if (!active && countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
+}
 
 function showError(id, msg) {
   const el = $(id);
@@ -35,16 +57,20 @@ function updateStatusPill(on) {
 
 function render() {
   const on = state.mode === 'on';
+  const cooldown = cooldownUntil();
+  const inCooldown = cooldown > 0;
   const toggle = $('mode-toggle');
   toggle.checked = on;
-  toggle.disabled = busy;
+  toggle.disabled = busy || inCooldown;
 
   updateStatusPill(on);
 
   $('mode-hint').textContent = on
-    ? (state.enforcement
-        ? 'Protection is ON. Blocked sites are unreachable in every app and browser on this Mac.'
-        : 'Protection is ON, but this Mac isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.')
+    ? (inCooldown
+        ? 'Verified. Protection stays ON for a moment \u2014 sites will unlock in ' + Math.max(1, Math.ceil((cooldown - Date.now()) / 1000)) + 's.'
+        : (state.enforcement
+            ? 'Protection is ON. Blocked sites are unreachable in every app and browser on this Mac.'
+            : 'Protection is ON, but this Mac isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.'))
     : 'Protection is OFF. Everything is reachable as usual.';
 
   const list = $('block-list');
@@ -79,6 +105,8 @@ function render() {
     li.querySelector('.activity-text').textContent = e.text || e.note || e.outcome || e.domain || '';
     act.append(li);
   }
+
+  syncCountdown();
 }
 
 async function init() {
@@ -119,6 +147,7 @@ async function init() {
       $('mode-error').classList.add('hidden');
       if (r && r.ok) {
         state.mode = r.mode;
+        if (r.cooldownUntil) state.modeCooldownUntil = r.cooldownUntil;
       } else if (r && r.cancelled) {
         showError('mode-error', wantOn
           ? 'Setup was cancelled. Protection stays off.'

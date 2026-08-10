@@ -33,6 +33,18 @@ let mainWindow = null;
 let lastSent = '';
 const POLL_MS = 1000;
 
+// After a successful unlock (Touch ID / passcode), the block list stays active
+// for this long before protection actually turns off. Gives a human a moment to
+// confirm the unlock; an agent can't get at the sites instantly.
+const OFF_COOLDOWN_MS = 10 * 1000;
+let offCooldownTimer = null;
+let offCooldownUntil = 0;
+
+function clearOffCooldown() {
+  if (offCooldownTimer) { clearTimeout(offCooldownTimer); offCooldownTimer = null; }
+  offCooldownUntil = 0;
+}
+
 /* ------------------------------ settings ----------------------------- */
 
 function readSettings() {
@@ -65,6 +77,7 @@ function getState() {
     mode: cfg.mode,
     blocklist: cfg.blocklist,
     activity: activity.readActivity(ACTIVITY_FILE, 100).reverse().map((e) => Object.assign({}, e, { text: activity.toPlainText(e) })),
+    modeCooldownUntil: offCooldownUntil,
     enforcement: dnsController.isEnforcing(),
     daemonInstalled: dnsController.isDaemonInstalled(),
     onboardingDone: !!(readSettings().onboardingDone)
@@ -128,7 +141,9 @@ ipcMain.handle('mode:set', async (_e, mode) => {
   const next = mode === 'on' ? 'on' : 'off';
 
   if (next === 'on') {
-    // Turning protection ON is instant and un-gated.
+    // Turning protection ON is instant and un-gated. It also cancels any
+    // pending unlock cooldown, so protection can't flip off a moment later.
+    clearOffCooldown();
     if (!dnsController.isDaemonInstalled()) {
       const res = await dnsController.installDaemon({
         nodeBin: dnsController.findNodeBin(app.getPath('exe')),
@@ -156,10 +171,22 @@ ipcMain.handle('mode:set', async (_e, mode) => {
     pushState();
     return { ok: false, cancelled: !!auth.cancelled, error: 'auth', mode: config.readConfig(USER_DATA).mode };
   }
-  config.setMode(USER_DATA, 'off');
-  activity.appendActivity(ACTIVITY_FILE, activity.makeEntry('toggle', 'off'));
+
+  // Verification passed. Protection does NOT flip off instantly: the block
+  // list stays live through a 10s cooldown, then protection turns off. Turning
+  // it back ON in that window cancels the pending unlock.
+  clearOffCooldown();
+  offCooldownUntil = Date.now() + OFF_COOLDOWN_MS;
+  activity.appendActivity(ACTIVITY_FILE, activity.makeEntry('toggle', 'off_pending', null, 'verified — 10s cooldown before sites unlock'));
+  offCooldownTimer = setTimeout(() => {
+    offCooldownTimer = null;
+    offCooldownUntil = 0;
+    config.setMode(USER_DATA, 'off');
+    activity.appendActivity(ACTIVITY_FILE, activity.makeEntry('toggle', 'off'));
+    pushState();
+  }, OFF_COOLDOWN_MS);
   pushState();
-  return { ok: true, mode: 'off' };
+  return { ok: true, mode: config.readConfig(USER_DATA).mode, cooldownUntil: offCooldownUntil };
 });
 
 /* ------------------------------- startup ----------------------------- */
