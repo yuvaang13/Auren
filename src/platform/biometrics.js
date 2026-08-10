@@ -66,4 +66,15 @@ async function requireAuthentication(reason) {
   return passcodeFallback();
 }
 
-module.exports = { requireAuthentication };
+// Reusable checkpoint for any sensitive action, not just site unlocks.
+// Returns a plain boolean (true = the user authenticated), per the contract:
+//   requireNativeAuth(reason: string): Promise<boolean>
+// The `reason` is shown to the user by the OS prompt so they know what they're
+// approving. Callers that need the finer-grained result (cancelled vs failed)
+// use requireAuthentication() instead.
+async function requireNativeAuth(reason) {
+  const r = await requireAuthentication(reason);
+  return r.ok === true;
+}
+
+module.exports = { requireAuthentication, requireNativeAuth };

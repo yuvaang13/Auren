@@ -14,10 +14,14 @@ const fs = require('fs');
 const path = require('path');
 
 // kinds: 'block' (a lookup was refused), 'toggle' (protection mode change),
-//        'daemon' (resolver lifecycle / errors)
+//        'agent' (an agent form action gated by policy), 'daemon' (resolver
+//        lifecycle / integrity / errors)
 // outcome: for block -> 'blocked' | 'allowed'; for toggle -> 'on' | 'off' |
 //          'off_pending' (verified, waiting out the cooldown) | 'off_failed' |
-//          'off_cancelled'; for daemon -> 'started' | 'stopped'
+//          'off_cancelled'; for agent -> 'allowed' | 'blocked' | 'logged';
+//          for daemon -> 'started' | 'stopped' | 'error' | 'dns_applied' |
+//          'dns_restored' | 'enforcement_degraded' | 'enforcement_restored' |
+//          'integrity_failed' | 'permissions_fixed'
 //          | 'error' | 'dns_applied' | 'dns_restored'
 function makeEntry(kind, outcome, domain, note) {
   return { ts: new Date().toISOString(), kind, outcome, domain: domain || null, note: note || null };
@@ -56,9 +60,18 @@ function toPlainText(entry) {
       if (entry.outcome === 'off_cancelled') return `Protection-off request cancelled \u00b7 ${time}`;
       if (entry.outcome === 'on_failed') return `Protection-on request did not finish (background service setup declined) \u00b7 ${time}`;
       return `Protection change \u00b7 ${time}`;
+    case 'agent':
+      if (entry.outcome === 'allowed') return `Agent form submission allowed${entry.note ? ' (' + entry.note + ')' : ''} \u00b7 ${time}`;
+      if (entry.outcome === 'blocked') return `Agent form submission blocked (sensitive${entry.note ? ': ' + entry.note : ''}) \u00b7 ${time}`;
+      if (entry.outcome === 'logged') return `Agent form submission logged (sensitive${entry.note ? ': ' + entry.note : ''}) \u00b7 ${time}`;
+      return `Agent action \u00b7 ${time}`;
     case 'daemon':
       if (entry.outcome === 'dns_applied') return `DNS pointing at Auren (system-wide) \u00b7 ${time}`;
       if (entry.outcome === 'dns_restored') return `DNS restored to normal \u00b7 ${time}`;
+      if (entry.outcome === 'enforcement_degraded') return `ENFORCEMENT DEGRADED \u2014 background service stopped responding \u00b7 ${time}`;
+      if (entry.outcome === 'enforcement_restored') return `Enforcement recovered \u2014 background service is responding again \u00b7 ${time}`;
+      if (entry.outcome === 'integrity_failed') return `INTEGRITY FAILURE \u2014 block list could not be verified; Auren failed closed \u00b7 ${time}`;
+      if (entry.outcome === 'permissions_fixed') return `Storage permissions tightened to owner-only \u00b7 ${time}`;
       if (entry.outcome === 'error') return `Auren background service error${entry.note ? ': ' + entry.note : ''} \u00b7 ${time}`;
       return `Auren background service ${entry.outcome} \u00b7 ${time}`;
     default:

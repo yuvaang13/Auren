@@ -36,11 +36,12 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
 
 ## What this does NOT do yet
 
-- **It does not inspect page content or form data.** There is no PII-in-forms
-  detection at this stage. Blocking at the DNS layer can't see inside web pages
-  — catching PII in form submissions would require a *proxy* layer (a different
-  mechanism, explicitly out of scope for this pivot). If that matters to you,
-  it's a possible future direction, not something Auren fakes.
+- **It does not intercept page content or form data on its own.** Auren now
+  ships a *classifier + auth-gating API* for outgoing form data
+  (`agent:inspect-action`, see below), but nothing in Auren currently sits in
+  the network path where form submissions happen. Wiring that API into a proxy
+  or browser bridge is the integration layer — Auren provides the detection,
+  the policy, and the native-auth gate, not the proxy itself.
 - **It does not detect humans vs. AI in real time.** Protection is a manual
   on/off switch. Auren does not try to tell whether a given lookup came from
   you or from an agent.
@@ -58,6 +59,107 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
   *are* covered.
 - **It blocks by domain name, not IP address.** Direct IP connections bypass
   DNS and are not blocked. The app rejects IP entries for exactly this reason.
+
+## Storage, integrity, and fail-closed guarantees
+
+This is the design contract for how Auren stores its block state and what it
+does when it can't trust its own enforcement. It's written to be honest about
+what is guaranteed and what is not.
+
+### 1. Block state lives only in the main process
+
+- The canonical block state — protection mode, the block list, and lock/unlock
+  metadata — exists **only** in the Electron main process and is persisted to an
+  **encrypted store** (`guardrail.dat`, AES-256-GCM, key in `auren.key`). Both
+  files are chmod 0600 (owner read/write only), enforced and repaired at every
+  app start.
+- The renderer never reads or writes those files. It can only ask the main
+  process via IPC: `state:get`, `blocklist:add/remove`, `mode:set`,
+  `guardrail:is-blocked`.
+- The root DNS daemon is a separate process (it can't do Electron IPC), so it
+  consumes a **signed read-only snapshot**: the main process writes
+  `config.json` + an HMAC-SHA256 `config.sig`. The daemon verifies the
+  signature before trusting a single byte and **never writes** the block state
+  back. It has no independent, writable copy — its copy is derived and verified.
+- **Any component that intercepts agent traffic** (a future proxy, native
+  messaging host, or browser-bridge) must use the same main-process API —
+  `guardrail:is-blocked` to ask whether a site is blocked, and
+  `agent:inspect-action` to gate sensitive actions. No component should keep its
+  own copy of block state.
+
+### 2. Fail-closed tamper detection
+
+Auren's default on any verification failure is **block, not allow**:
+
+- **Config tampering.** Editing `config.json` outside the app (without
+  regenerating `config.sig`) fails signature verification. The daemon then
+  denies **every** outbound lookup (deny-all) and keeps system DNS pointed at
+  the local resolver, even if the tampered config claims mode is OFF.
+- **Encrypted-store corruption.** If `guardrail.dat` can't be decrypted, the
+  app starts in a fail-closed state: mode ON, deny-all flag set, a notification
+  shown, and the event logged.
+- **Loose file permissions.** If storage files are found looser than 0600 at
+  startup, Auren tightens them and logs a `permissions_fixed` event.
+- **Heartbeat / watchdog.** The daemon writes a heartbeat every ~2 s with a
+  timestamp and its own integrity status. The app checks it every ~3 s; after
+  roughly two missed beats (or an `integrityOk: false` report) the app flips to
+  **degraded** mode: every gated surface refuses, a persistent banner shows in
+  the UI, a macOS notification is raised, and the event is logged with a
+  timestamp. When the daemon is healthy again the app logs recovery.
+
+### 3. What happens if the whole app is killed (fail-closed where feasible)
+
+- Closing the Auren app does **not** remove the OS-level hook. On macOS the
+  system DNS setting (pointing at `127.0.0.1`) is a SystemConfiguration
+  property; the daemon is a launchd `KeepAlive` service. If the app is killed,
+  the daemon keeps enforcing. If the daemon itself is killed, system DNS is
+  **left** pointing at the local resolver — nothing answers while it's down, so
+  the result is deny-all (fail-closed), not open access. launchd restarts the
+  daemon, which re-verifies the config signature before resuming.
+- Turning the toggle OFF (authenticated) is the only in-app path that restores
+  normal DNS, and it's gated by the OS-native check plus the 10-second cooldown.
+
+### 4. Honest limits (known gaps)
+
+- **Same-account read-all defeats storage encryption.** The AES key sits in the
+  same user account as the data. A process running as that user that can read
+  both `guardrail.dat` and `auren.key` can decrypt the store and forge
+  signatures. Auren's real boundaries are OS file permissions, the sandboxed
+  renderer, and the fact that browser/agent scripts can't read arbitrary user
+  files. A fully compromised machine (already-root or same-user read-all) is
+  out of scope — see [What this does NOT do yet](#what-this-does-not-do-yet).
+- **An admin can remove the OS-level hook outside the app.** `sudo` unload of
+  the launchd plist, manual DNS changes, or deleting the daemon files all happen
+  outside Auren's control. Auren cannot prevent an admin user from doing this;
+  it can only detect and report. (The activity log and the degraded banner are
+  the honest response.)
+- **Docker containers and NAT'd guests** bypass the host's DNS setting unless
+  explicitly configured to use it.
+- **The degraded watchdog covers the daemon**, not the full integrity of the
+  machine. If the block list is copied and the copy is served by an attacker
+  that also runs the daemon process, Auren can't tell the difference.
+
+## Sensitive-action policy (outgoing form data)
+
+Auren ships a rule-based classifier (`src/core/sensitive.js`) that detects
+structured PII and credentials in outgoing form data, decoupled from a policy
+layer (`src/core/policy.js`) that decides what to do about it:
+
+- **Classifier signal:** SSN shapes (`NNN-NN-NNNN`), credit-card numbers with a
+  Luhn checksum, password/secret form fields, email-or-username + password
+  combos, and common API-token shapes (Stripe, AWS, GitHub, Slack, Google, PEM
+  private keys). It only emits `{ sensitive: true, types: [...] }` — it never
+  stores, logs, or sends the data.
+- **Policy:** by default any sensitive signal → **require native OS auth**
+  (`requireNativeAuth(reason)` — the same Touch ID / passcode checkpoint used
+  for unlocking sites). While Auren is **degraded**, the policy is **block**.
+  Policies are tunable without touching detection: set `sensitivePolicy` in
+  `~/Library/Application Support/Auren/settings.json`, e.g.
+  `{ "sensitivePolicy": { "password": "log" } }`.
+- **The gate:** `agent:inspect-action` runs the whole chain (classify → decide →
+  authenticate → log) inside the main process. A future proxy or browser bridge
+  calls it before allowing an agent's form submission through; Auren returns
+  `{ allowed, action, types, reason }` and logs the outcome like a site block.
 
 ## Why the biometric gate exists
 
@@ -126,17 +228,21 @@ block list apply in real time with no restart.
 
 ```
 src/
-  main.js                 Electron main process (window, IPC, audit entries)
+  main.js                 Electron main process (window, IPC, canonical block state)
   preload.js              minimal bridge to the UI (renderer is sandboxed)
   renderer/               the whole UI: toggle, block list, activity, onboarding
   core/
     domains.js            domain normalization + exact/subdomain matching
-    config.js             config.json read/write (atomic), shared with the daemon
+    config.js             config.json read/write (atomic) + HMAC signing, shared
+    store.js              encrypted at-rest store (AES-256-GCM) for block state
+    sensitive.js          outgoing form-data classifier (PII / credentials)
+    policy.js             decision layer over the classifier signal (auth-gate)
     activity.js           plain-language activity log (JSONL)
   dns/
     dns-message.js        minimal DNS wire parsing / NXDOMAIN building
     resolver.js           the local DNS server (UDP + TCP, blocks + forwards)
-    daemon.js             the root service: reconciles DNS + runs the resolver
+    daemon.js             root service: verifies config signature, fails closed,
+                          writes heartbeat, reconciles DNS, runs the resolver
   platform/
     biometrics.js         macOS Touch ID / passcode gate (OS-native, pass/fail)
     dns-controller.js     daemon install + enforcement-status checks
@@ -144,16 +250,20 @@ scripts/
   install-daemon.sh       install the root daemon from the CLI
   e2e-check.sh            real end-to-end verification (blocked vs. allowed)
 test/
-  unit.test.js            core + DNS-message logic, no privileges
+  unit.test.js            core + store + signing + policy, no privileges
+  sensitive.test.js       classifier samples (false positives / negatives)
   dns-server.test.js      real resolver/daemon + mock upstream + dig
 ```
 
-Persistence lives in two small places:
+Persistence lives in three small places:
 
-- `~/Library/Application Support/Auren/config.json` — the single source of
-  truth: `{ "mode": "on"|"off", "blocklist": ["bank.com", ...] }`. Written by
-  the app (atomically), polled by the daemon. This is the *only* file that
-  controls behavior.
+- `~/Library/Application Support/Auren/guardrail.dat` — the **canonical**,
+  encrypted block state (`mode`, `blocklist`, lock/unlock metadata). Only the
+  main process reads or writes it.
+- `~/Library/Application Support/Auren/config.json` + `config.sig` — a
+  **signed snapshot** exported by the app for the root daemon, which verifies
+  the signature on every poll and fails closed (deny-all) if it doesn't check
+  out. The daemon treats this file as untrusted input.
 - `~/Library/Application Support/Auren/activity.jsonl` — the plain-language log.
 
 `/Library/LaunchDaemons/com.auren.guardrail.plist` and `/usr/local/lib/auren/`
@@ -191,11 +301,13 @@ protection off and when* — without ever logging credentials or biometrics.
 ## Running the tests
 
 ```bash
-npm run test:unit      # 16 assertions: domains, config, activity, DNS wire format
-npm run test:dns       # 8 assertions: real resolver + daemon with dig, no privileges
-npm test               # both
-npm run e2e:check      # REAL system-wide check (daemon installed + Protection ON):
-                       #   blocked domain -> NXDOMAIN, normal domain -> resolves
+npm run test:unit        # 26 assertions: domains, config, signing, store, policy, activity
+npm run test:classifier  # 12 assertions: form-data classifier samples
+npm run test:dns         # 10 assertions: real resolver + daemon with dig, no privileges
+npm test                 # unit + classifier
+npm run test:all         # everything
+npm run e2e:check        # REAL system-wide check (daemon installed + Protection ON):
+                         #   blocked domain -> NXDOMAIN, normal domain -> resolves
 ```
 
 `e2e:check` temporarily adds `auren-e2e-check.test` to the block list, verifies

@@ -56,6 +56,8 @@ function buildInstallerScript(opts) {
   const cfg = opts.configPath;
   const act = opts.activityPath;
   const st = opts.statePath;
+  const key = opts.keyPath;
+  const hb = opts.heartbeatPath;
   const spool = '/Library/Application Support/Auren';
   return [
     '#!/bin/bash',
@@ -82,6 +84,10 @@ function buildInstallerScript(opts) {
     '  <dict>',
     '    <key>AUREN_CONFIG</key>',
     '    <string>' + cfg + '</string>',
+    '    <key>AUREN_KEY</key>',
+    '    <string>' + key + '</string>',
+    '    <key>AUREN_HEARTBEAT</key>',
+    '    <string>' + hb + '</string>',
     '    <key>AUREN_ACTIVITY</key>',
     '    <string>' + act + '</string>',
     '    <key>AUREN_STATE</key>',

@@ -7,7 +7,8 @@
 #
 # Overrides (all optional):
 #   AUREN_NODE=<node or electron binary>   interpreter to run daemon.js with
-#   AUREN_CONFIG / AUREN_ACTIVITY          paths for the shared config + log
+#   AUREN_CONFIG / AUREN_KEY / AUREN_HEARTBEAT / AUREN_ACTIVITY
+#                                          paths for the shared config + log
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,6 +31,8 @@ fi
 
 export AUREN_NODE="$NODE_BIN"
 export AUREN_CONFIG="${AUREN_CONFIG:-$TARGET_HOME/Library/Application Support/Auren/config.json}"
+export AUREN_KEY="${AUREN_KEY:-$TARGET_HOME/Library/Application Support/Auren/auren.key}"
+export AUREN_HEARTBEAT="${AUREN_HEARTBEAT:-/Library/Application Support/Auren/heartbeat.json}"
 export AUREN_ACTIVITY="${AUREN_ACTIVITY:-$TARGET_HOME/Library/Application Support/Auren/activity.jsonl}"
 export AUREN_STATE="${AUREN_STATE:-/Library/Application Support/Auren/state.json}"
 
@@ -39,6 +42,8 @@ const dns = require("./src/platform/dns-controller");
 const out = dns.installDaemonCli({
   nodeBin: process.env.AUREN_NODE,
   configPath: process.env.AUREN_CONFIG,
+  keyPath: process.env.AUREN_KEY,
+  heartbeatPath: process.env.AUREN_HEARTBEAT,
   activityPath: process.env.AUREN_ACTIVITY,
   statePath: process.env.AUREN_STATE
 });

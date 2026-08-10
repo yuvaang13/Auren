@@ -68,6 +68,53 @@ dig @127.0.0.1 example.com          # -> status: NOERROR, an A record
       starts, `off` when it completes). Confirm there is **no** credential
       or biometric data anywhere in that file.
 
+## 5.5 Storage integrity (encrypted store + signatures)
+
+- [ ] After any use, `~/Library/Application Support/Auren/guardrail.dat` exists
+      and is encrypted: `grep -c bank.com ~/Library/Application\ Support/Auren/guardrail.dat`
+      returns `0` (the block list is not in plaintext).
+- [ ] `ls -l` on `guardrail.dat`, `auren.key`, `config.json`, and `config.sig`
+      all show `-rw-------` (0600, owner read/write only).
+- [ ] Loosen one file (`chmod 644 config.json`), relaunch the app, then check
+      it's been tightened back to `0600` and the activity log contains a
+      `permissions_fixed` line.
+- [ ] Manually edit `config.json` to remove a blocked site (do NOT touch
+      `config.sig`). Within ~1 second the daemon fails closed: every domain,
+      blocked or not, now answers NXDOMAIN, and `dig` confirms it. Restore by
+      toggling the app (which rewrites a valid signature).
+
+## 5.6 Heartbeat / watchdog (degraded mode)
+
+- [ ] With Protection ON and the daemon healthy, `/Library/Application
+      Support/Auren/heartbeat.json` is fresh (updated every ~2 s) with
+      `"integrityOk": true`.
+- [ ] Stop the daemon: `sudo launchctl bootout system/com.auren.guardrail`.
+- [ ] Within ~10 seconds the app shows the **degraded banner**, the status pill
+      reads "Degraded", a macOS notification fires, and the activity log gains
+      an `enforcement_degraded` line.
+- [ ] Restart the daemon (`sudo bash scripts/install-daemon.sh` or toggle the
+      switch), and the app logs `enforcement_restored` and clears the banner.
+
+## 5.7 Sensitive-action gating (agent:inspect-action)
+
+With the app running, call the gate the way a future bridge would — from the
+renderer devtools or a test script:
+
+```js
+await window.auren.inspectAction({ url: 'https://shop.example.com/checkout', data: { card: '4111111111111111' } })
+// -> { allowed: false, action: 'require_auth', types: ['credit_card'], ... }
+```
+
+- [ ] The OS-native auth prompt appears with a human-readable reason naming
+      "credit card". Cancel it: `allowed: false` and the activity log records
+      the block.
+- [ ] A benign payload returns `allowed: true` with no auth prompt:
+      `await window.auren.inspectAction({ data: { q: 'restaurants near me' } })`.
+- [ ] While the app is **degraded** (see 5.6), even benign payloads return
+      `allowed: false` (fail-closed policy).
+- [ ] `window.auren.isBlocked('bank.com')` returns `true` while blocked and
+      `false` when not, and never touches a file on disk.
+
 ## 6. Protection survives app restart
 
 - [ ] Leave Protection ON, quit Auren, relaunch — the toggle is still ON and

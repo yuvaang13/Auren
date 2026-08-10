@@ -34,7 +34,7 @@ function load(name) {
 
 const { DnsResolver, DEFAULT_UPSTREAM } = require(path.join(__dirname, 'resolver.js'));
 const { domainMatches } = load('domains.js');
-const { readConfigFile } = load('config.js');
+const { readConfigFile, verifyData } = load('config.js');
 const { makeEntry, appendActivity } = load('activity.js');
 
 function logActivity(entry) {
@@ -54,11 +54,14 @@ function logActivity(entry) {
 const CONFIG = process.env.AUREN_CONFIG;
 const ACTIVITY = process.env.AUREN_ACTIVITY;
 const STATE = process.env.AUREN_STATE;
+const KEY_FILE = process.env.AUREN_KEY;
+const HEARTBEAT = process.env.AUREN_HEARTBEAT;
 const DNS_ENABLED = String(process.env.AUREN_DNS_ENABLED || '1') !== '0';
 const PORT = parseInt(process.env.AUREN_PORT || '53', 10);
 
 const POLL_MS = 800;
 const LOG_THROTTLE_MS = 5000;
+const HEARTBEAT_MS = 2000;
 
 let mode = 'off';
 let blocklist = [];
@@ -66,11 +69,47 @@ let resolver = null;
 let upstreamApplied = false;
 let state = { services: {}, applied: false };
 
+// Fail-closed integrity state. When true, EVERY outbound lookup is refused
+// (NXDOMAIN) and system DNS stays pointed at the local resolver, regardless of
+// what the config file claims. Set when the config signature doesn't verify,
+// the config is unreadable, or the signing key is unavailable.
+let failClosed = false;
+let integrityKey = null;
+let integrityReported = false;
+
 /* ----------------------------- helpers ----------------------------- */
 
 function log(level, msg) {
   const line = `${new Date().toISOString()} [${level}] ${msg}`;
   try { fs.appendFileSync(process.env.AUREN_DAEMON_LOG || '/tmp/auren-daemon.log', line + '\n'); } catch {}
+}
+
+// Load the HMAC key that the main process uses to sign config.json. The daemon
+// runs as root, so it can read the user's 0600 key file. If the key is missing
+// or unreadable, the daemon cannot verify its config -> fail closed.
+function loadIntegrityKey() {
+  if (!KEY_FILE) {
+    log('error', 'AUREN_KEY not set — cannot verify config; failing closed');
+    failClosed = true;
+    return;
+  }
+  try {
+    const key = fs.readFileSync(KEY_FILE);
+    if (!key || key.length === 0) throw new Error('empty key');
+    integrityKey = key;
+  } catch (err) {
+    log('error', 'integrity key unreadable: ' + err.message);
+    failClosed = true;
+  }
+}
+
+// Liveness signal for the desktop app's watchdog. Written at a short interval
+// with a timestamp, pid, and integrity status. World-readable on purpose: the
+// unprivileged app must be able to read it. It contains no secrets.
+function writeHeartbeat() {
+  if (!HEARTBEAT) return;
+  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, mode, failClosed, integrityOk: !failClosed }) + '\n';
+  try { fs.writeFileSync(HEARTBEAT, body, { mode: 0o644 }); } catch (err) { log('error', 'heartbeat write failed: ' + err.message); }
 }
 
 function runNetworksetup(args) {
@@ -187,9 +226,11 @@ function discoverUpstream() {
 /* ------------------------------ blocking ----------------------------- */
 
 function isBlocked(name) {
-  if (mode !== 'on') return false;
   const n = name.toLowerCase();
   if (!n || n === 'localhost' || n.endsWith('.local') || n.endsWith('.arpa') || n === 'localhost.') return false;
+  // Fail-closed: if we can't verify our own config, refuse everything outbound.
+  if (failClosed) return true;
+  if (mode !== 'on') return false;
   for (const d of blocklist) {
     if (domainMatches(n, d)) return true;
   }
@@ -210,12 +251,38 @@ function onBlocked(name) {
 let resolverDownReported = false;
 
 async function reconcile() {
+  let cfg = null;
   try {
-    const cfg = readConfigFile(CONFIG);
+    const raw = fs.readFileSync(CONFIG);
+    const sigFile = CONFIG + '.sig';
+    const sig = fs.existsSync(sigFile) ? fs.readFileSync(sigFile, 'utf8') : '';
+    if (integrityKey && verifyData(raw, integrityKey, sig)) {
+      cfg = readConfigFile(CONFIG);
+      failClosed = !!cfg.failClosed;
+    } else {
+      if (!integrityReported) {
+        logActivity(makeEntry('daemon', 'integrity_failed', null, 'config signature verification failed'));
+        log('error', 'config signature verification FAILED — failing closed (blocking all outbound)');
+        integrityReported = true;
+      }
+      failClosed = true;
+    }
+  } catch (err) {
+    if (!integrityReported) {
+      logActivity(makeEntry('daemon', 'integrity_failed', null, 'config unreadable: ' + err.message));
+      integrityReported = true;
+    }
+    log('error', 'readConfig: ' + err.message);
+    failClosed = true;
+  }
+
+  if (cfg) {
     mode = cfg.mode;
     blocklist = cfg.blocklist;
-  } catch (err) {
-    log('error', 'readConfig: ' + err.message);
+  } else {
+    // Fail-closed: we can't trust the config, so block everything.
+    mode = 'on';
+    blocklist = [];
   }
 
   if (!resolver) {
@@ -240,7 +307,7 @@ async function reconcile() {
     }
   }
 
-  if (resolver && resolver.running && mode === 'on') {
+  if (resolver && resolver.running && (mode === 'on' || failClosed)) {
     const upstream = discoverUpstream();
     if (!upstreamApplied || JSON.stringify(upstream) !== JSON.stringify(resolver.upstreamServers)) {
       resolver.setUpstream(upstream);
@@ -248,15 +315,25 @@ async function reconcile() {
     }
   }
 
-  if (mode === 'on') applyDns();
+  // Fail-closed means DNS stays pointed at us and we deny everything, even if
+  // a tampered config claims mode is OFF.
+  if (mode === 'on' || failClosed) applyDns();
   else restoreDns();
+
+  writeHeartbeat();
 }
 
 /* -------------------------------- main ------------------------------- */
 
 function shutdown() {
-  log('info', 'shutting down, restoring DNS');
-  restoreDns();
+  log('info', 'shutting down');
+  if (mode === 'on' || failClosed) {
+    // Fail-closed: leave system DNS pointed at the local resolver. Nothing
+    // answers while we're down, so outbound stays denied; launchd restarts us.
+    log('info', 'fail-closed: leaving DNS pointed at local resolver (deny-all while down)');
+  } else {
+    restoreDns();
+  }
   if (resolver) resolver.stop().catch(() => {});
   process.exit(0);
 }
@@ -266,9 +343,11 @@ process.on('SIGINT', shutdown);
 
 (async () => {
   log('info', 'daemon starting (dns-enabled=' + DNS_ENABLED + ' port=' + PORT + ')');
+  loadIntegrityKey();
   logActivity(makeEntry('daemon', 'started'));
   await reconcile();
   setInterval(reconcile, POLL_MS);
+  setInterval(writeHeartbeat, HEARTBEAT_MS);
 })().catch((err) => {
   log('error', 'fatal: ' + (err && err.stack || err));
   process.exit(1);

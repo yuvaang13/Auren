@@ -15,9 +15,11 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { normalizeDomain, validateBlockDomain } = require('./domains');
 
-const DEFAULT_CONFIG = Object.freeze({ version: 1, mode: 'off', blocklist: [] });
+const DEFAULT_CONFIG = Object.freeze({ version: 1, mode: 'off', blocklist: [], failClosed: false });
+const SIG_SUFFIX = '.sig';
 
 function configFile(userDataDir) {
   return path.join(userDataDir, 'config.json');
@@ -32,21 +34,42 @@ function readConfigFile(file) {
     const blocklist = Array.isArray(parsed.blocklist)
       ? parsed.blocklist.map(normalizeDomain).filter(Boolean)
       : [];
-    return { version: 1, mode, blocklist };
+    return { version: 1, mode, blocklist, failClosed: parsed.failClosed === true };
   } catch (err) {
     if (err.code !== 'ENOENT') {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       try { fs.writeFileSync(file + '.corrupt', String(raw || '') + '\n', { flag: 'a' }); } catch {}
     }
-    return { version: 1, mode: 'off', blocklist: [] };
+    return { version: 1, mode: 'off', blocklist: [], failClosed: false };
   }
 }
 
 function writeConfigFile(file, cfg) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify({ version: 1, mode: cfg.mode, blocklist: cfg.blocklist }, null, 2) + '\n');
+  fs.writeFileSync(tmp, JSON.stringify({ version: 1, mode: cfg.mode, blocklist: cfg.blocklist, failClosed: cfg.failClosed === true }, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(tmp, file);
+}
+
+// HMAC-SHA256 integrity over the on-disk bytes. `config.sig` is written by the
+// main process next to `config.json`; the root daemon verifies it before
+// trusting the file, so an edit made outside the app fails verification and
+// the daemon fails closed (blocks everything).
+function signData(data, key) {
+  return crypto.createHmac('sha256', key).update(data).digest('hex');
+}
+
+function verifyData(data, key, sigHex) {
+  if (!sigHex || !key) return false;
+  const expected = Buffer.from(signData(data, key), 'hex');
+  const given = Buffer.from(String(sigHex).trim(), 'hex');
+  return given.length === expected.length && crypto.timingSafeEqual(expected, given);
+}
+
+// Writes the plaintext config for the daemon PLUS its signature sidecar.
+function writeSignedConfig(file, cfg, key) {
+  writeConfigFile(file, cfg);
+  fs.writeFileSync(file + SIG_SUFFIX, signData(fs.readFileSync(file), key) + '\n', { mode: 0o600 });
 }
 
 function readConfig(userDataDir) {
@@ -81,4 +104,4 @@ function removeDomain(userDataDir, input) {
   return { ok: true, blocklist: cfg.blocklist };
 }
 
-module.exports = { DEFAULT_CONFIG, configFile, readConfigFile, writeConfigFile, readConfig, writeConfig, setMode, addDomain, removeDomain };
+module.exports = { DEFAULT_CONFIG, SIG_SUFFIX, configFile, readConfigFile, writeConfigFile, readConfig, writeConfig, setMode, addDomain, removeDomain, signData, verifyData, writeSignedConfig };

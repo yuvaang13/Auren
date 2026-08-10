@@ -12,6 +12,8 @@ const domains = require('../src/core/domains');
 const config = require('../src/core/config');
 const activity = require('../src/core/activity');
 const dnsMsg = require('../src/dns/dns-message');
+const store = require('../src/core/store');
+const policy = require('../src/core/policy');
 
 let passed = 0;
 let failed = 0;
@@ -105,6 +107,84 @@ test('config file survives a corrupt write (safe default: off)', () => {
   assert.deepStrictEqual(cfg.blocklist, []);
 });
 
+console.log('signed config');
+test('writeSignedConfig creates config + signature sidecar', () => {
+  const dir = tmpDir();
+  const key = Buffer.from('0123456789abcdef0123456789abcdef');
+  const file = path.join(dir, 'config.json');
+  config.writeSignedConfig(file, { version: 1, mode: 'on', blocklist: ['bank.com'], failClosed: false }, key);
+  assert.ok(fs.existsSync(file + '.sig'));
+  const raw = fs.readFileSync(file);
+  const sig = fs.readFileSync(file + '.sig', 'utf8');
+  assert.ok(config.verifyData(raw, key, sig));
+});
+
+test('tampering with the config fails signature verification', () => {
+  const dir = tmpDir();
+  const key = Buffer.from('0123456789abcdef0123456789abcdef');
+  const file = path.join(dir, 'config.json');
+  config.writeSignedConfig(file, { version: 1, mode: 'on', blocklist: ['bank.com'], failClosed: false }, key);
+  fs.writeFileSync(file, JSON.stringify({ version: 1, mode: 'off', blocklist: [] })); // edited outside the app
+  assert.ok(!config.verifyData(fs.readFileSync(file), key, fs.readFileSync(file + '.sig', 'utf8')));
+});
+
+test('verifyData rejects missing/wrong signatures', () => {
+  const key = Buffer.from('0123456789abcdef0123456789abcdef');
+  const data = Buffer.from('hello');
+  assert.ok(!config.verifyData(data, key, ''));
+  assert.ok(!config.verifyData(data, key, 'deadbeef'));
+});
+
+console.log('secure store');
+test('secure store round-trips encrypted state', () => {
+  const dir = tmpDir();
+  const key = store.loadOrCreateKey(dir);
+  store.saveSecureStore(dir, key, { version: 1, mode: 'on', blocklist: ['bank.com'], lock: { state: 'locked', unlockExpiry: 0 } });
+  const loaded = store.loadSecureStore(dir, key);
+  assert.strictEqual(loaded.mode, 'on');
+  assert.deepStrictEqual(loaded.blocklist, ['bank.com']);
+  const raw = fs.readFileSync(path.join(dir, store.STORE_FILE), 'utf8');
+  assert.ok(!raw.includes('bank.com'), 'store must be encrypted at rest');
+});
+
+test('secure store rejects a wrong key (tamper/corruption)', () => {
+  const dir = tmpDir();
+  const key = store.loadOrCreateKey(dir);
+  store.saveSecureStore(dir, key, { version: 1, mode: 'on', blocklist: ['bank.com'], lock: null });
+  const wrong = Buffer.alloc(32, 7);
+  assert.throws(() => store.loadSecureStore(dir, wrong), /bad decrypt|auth|error/i);
+});
+
+test('ensurePermissions tightens a loosened file to 0600', () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'loose.txt');
+  fs.writeFileSync(file, 'x', { mode: 0o644 });
+  const changed = store.ensurePermissions(file);
+  assert.ok(changed);
+  const st = fs.statSync(file);
+  assert.strictEqual(st.mode & 0o077, 0);
+  assert.ok(!store.ensurePermissions(file), 'second call should be a no-op');
+});
+
+console.log('policy');
+test('policy requires auth for sensitive signals by default', () => {
+  assert.strictEqual(policy.decidePolicy({ sensitive: true, types: ['credit_card'] }).action, 'require_auth');
+  assert.strictEqual(policy.decidePolicy({ sensitive: true, types: ['ssn', 'password'] }).action, 'require_auth');
+});
+
+test('policy allows non-sensitive signals and honors custom rules', () => {
+  assert.strictEqual(policy.decidePolicy({ sensitive: false, types: [] }).action, 'allow');
+  const block = policy.decidePolicy({ sensitive: true, types: ['secret'] }, { rules: { secret: 'block' } });
+  assert.strictEqual(block.action, 'block');
+  const log = policy.decidePolicy({ sensitive: true, types: ['password'] }, { rules: { password: 'log' } });
+  assert.strictEqual(log.action, 'log');
+});
+
+test('policy fails closed while degraded', () => {
+  const d = policy.decidePolicy({ sensitive: false, types: [] }, { degraded: true });
+  assert.strictEqual(d.action, 'block');
+});
+
 console.log('activity');
 test('activity appends and reads back entries', () => {
   const dir = tmpDir();
@@ -130,6 +210,13 @@ test('activity toPlainText stays plain-language', () => {
   assert.ok(activity.toPlainText(e).includes('Blocked: attempt to reach bank.com'));
   assert.ok(activity.toPlainText(activity.makeEntry('toggle', 'off')).includes('Protection turned off'));
   assert.ok(activity.toPlainText(activity.makeEntry('toggle', 'off_pending')).includes('10 seconds'));
+});
+
+test('activity toPlainText covers agent + daemon integrity outcomes', () => {
+  assert.ok(activity.toPlainText(activity.makeEntry('agent', 'blocked', null, 'types=credit_card')).includes('blocked'));
+  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'enforcement_degraded')).includes('DEGRADED'));
+  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'integrity_failed')).includes('failed closed'));
+  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'permissions_fixed')).includes('owner-only'));
 });
 
 console.log('dns-message');

@@ -7,18 +7,28 @@ This policy covers defects that undermine the guarantees it *does* claim:
 
 - **fail-closed gating**: turning Protection OFF requires a successful
   OS-native biometric/passcode check; a failed or cancelled check leaves
-  protection ON;
+  protection ON, and the unlock itself waits out a 10-second cooldown;
+- **fail-closed tamper detection**: config tampering, an unreadable encrypted
+  store, missing signing key, or a silent daemon (missed heartbeats) must
+  result in deny-all enforcement and a visible degraded state, never silent
+  open access;
+- **centralized block state**: the canonical block list lives only in the main
+  process (encrypted at rest, 0600 perms, verified at startup); no renderer or
+  bridge component holds its own writable copy;
 - **the privacy invariant**: no biometric or credential data ever passes
   through Auren's process — it only consumes pass/fail results from OS APIs;
 - **accidental collection or transmission of private data** (the activity log
-  must never contain more than domain, timestamp, and outcome);
+  must never contain more than domain, timestamp, outcome, and a classifier
+  type label — never the underlying values);
 - **config handling**: the privileged daemon treats `config.json` as untrusted
-  input and re-validates everything it reads.
+  input, verifies the HMAC signature, and re-validates everything it reads.
 
 It does **not** cover bypasses documented in the README's "What this does NOT
-do yet" (e.g. an agent with root reconfiguring DNS or stopping the daemon, or
-apps using their own DoH resolver) — those are accepted limitations, not
-vulnerabilities.
+do yet" and "Storage, integrity, and fail-closed guarantees" (e.g. an agent
+with root reconfiguring DNS or stopping the daemon, an admin removing the
+OS-level hook outside the app, same-account read-all defeating at-rest
+encryption, or apps using their own DoH resolver) — those are accepted
+limitations, not vulnerabilities.
 
 ## Reporting
 

@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('auren', {
   setMode: (mode) => ipcRenderer.invoke('mode:set', mode),
   addDomain: (domain) => ipcRenderer.invoke('blocklist:add', domain),
   removeDomain: (domain) => ipcRenderer.invoke('blocklist:remove', domain),
+  isBlocked: (domain) => ipcRenderer.invoke('guardrail:is-blocked', domain),
+  inspectAction: (payload) => ipcRenderer.invoke('agent:inspect-action', payload),
   finishOnboarding: () => ipcRenderer.invoke('onboarding:done'),
   onChange: (cb) => ipcRenderer.on('state', (_event, state) => cb(state))
 });

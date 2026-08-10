@@ -3,7 +3,7 @@
 const api = window.auren;
 const $ = (id) => document.getElementById(id);
 
-let state = { mode: 'off', blocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0 };
+let state = { mode: 'off', blocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0, degraded: false };
 let busy = false;
 let countdownTimer = null;
 
@@ -43,7 +43,10 @@ function updateStatusPill(on) {
   const pill = $('status-pill');
   const label = $('status-label');
   pill.classList.remove('on', 'off', 'warn');
-  if (on && state.enforcement) {
+  if (state.degraded) {
+    pill.classList.add('warn');
+    label.textContent = 'Degraded';
+  } else if (on && state.enforcement) {
     pill.classList.add('on');
     label.textContent = 'Protected';
   } else if (on) {
@@ -63,15 +66,19 @@ function render() {
   toggle.checked = on;
   toggle.disabled = busy || inCooldown;
 
+  $('degraded-banner').classList.toggle('hidden', !state.degraded);
+
   updateStatusPill(on);
 
-  $('mode-hint').textContent = on
-    ? (inCooldown
-        ? 'Verified. Protection stays ON for a moment \u2014 sites will unlock in ' + Math.max(1, Math.ceil((cooldown - Date.now()) / 1000)) + 's.'
-        : (state.enforcement
-            ? 'Protection is ON. Blocked sites are unreachable in every app and browser on this Mac.'
-            : 'Protection is ON, but this Mac isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.'))
-    : 'Protection is OFF. Everything is reachable as usual.';
+  $('mode-hint').textContent = state.degraded
+    ? 'Auren can\u2019t verify its own enforcement right now, so it is failing closed: nothing it gates will be allowed through until the background service recovers.'
+    : (on
+        ? (inCooldown
+            ? 'Verified. Protection stays ON for a moment \u2014 sites will unlock in ' + Math.max(1, Math.ceil((cooldown - Date.now()) / 1000)) + 's.'
+            : (state.enforcement
+                ? 'Protection is ON. Blocked sites are unreachable in every app and browser on this Mac.'
+                : 'Protection is ON, but this Mac isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.'))
+        : 'Protection is OFF. Everything is reachable as usual.');
 
   const list = $('block-list');
   list.textContent = '';

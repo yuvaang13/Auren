@@ -16,6 +16,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="$HOME/Library/Application Support/Auren/config.json"
+KEY="$HOME/Library/Application Support/Auren/auren.key"
 TEST_DOMAIN="auren-e2e-check.test"
 FAILED=0
 
@@ -33,13 +34,15 @@ else
 fi
 
 # 2/3. Add the test domain to the block list, wait for the daemon to pick it up.
-if [ -f "$CONFIG" ]; then
+# Writes a SIGNED config (the daemon fails closed if the signature is missing).
+if [ -f "$CONFIG" ] && [ -f "$KEY" ]; then
   node -e '
+    const fs = require("fs");
     const c = require(process.argv[1] + "/src/core/config");
     const cfg = c.readConfigFile(process.argv[2]);
-    if (!cfg.blocklist.includes(process.argv[3])) cfg.blocklist.push(process.argv[3]);
-    c.writeConfigFile(process.argv[2], cfg);
-  ' "$ROOT" "$CONFIG" "$TEST_DOMAIN"
+    if (!cfg.blocklist.includes(process.argv[4])) cfg.blocklist.push(process.argv[4]);
+    c.writeSignedConfig(process.argv[2], cfg, fs.readFileSync(process.argv[3]));
+  ' "$ROOT" "$CONFIG" "$KEY" "$TEST_DOMAIN"
   sleep 2
 
   BLOCKED_STATUS="$(dig @127.0.0.1 "$TEST_DOMAIN" +time=3 +tries=1 2>/dev/null | grep -m1 'status:' | awk '{print $2}')"
@@ -59,14 +62,15 @@ if [ -f "$CONFIG" ]; then
 
   # Clean up the test domain.
   node -e '
+    const fs = require("fs");
     const c = require(process.argv[1] + "/src/core/config");
     const cfg = c.readConfigFile(process.argv[2]);
-    cfg.blocklist = cfg.blocklist.filter((d) => d !== process.argv[3]);
-    c.writeConfigFile(process.argv[2], cfg);
-  ' "$ROOT" "$CONFIG" "$TEST_DOMAIN"
+    cfg.blocklist = cfg.blocklist.filter((d) => d !== process.argv[4]);
+    c.writeSignedConfig(process.argv[2], cfg, fs.readFileSync(process.argv[3]));
+  ' "$ROOT" "$CONFIG" "$KEY" "$TEST_DOMAIN"
   echo "  INFO  removed $TEST_DOMAIN from the block list"
 else
-  fail "no config found at $CONFIG — run the app once or create it first"
+  fail "no config or signing key found ($CONFIG, $KEY) — run the app once first"
 fi
 
 echo "======================"

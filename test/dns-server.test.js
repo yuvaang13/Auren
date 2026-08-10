@@ -7,6 +7,7 @@
  */
 'use strict';
 const assert = require('assert');
+const crypto = require('crypto');
 const dgram = require('dgram');
 const fs = require('fs');
 const os = require('os');
@@ -16,6 +17,7 @@ const { spawn, execFile } = require('child_process');
 const dnsMsg = require('../src/dns/dns-message');
 const { DnsResolver } = require('../src/dns/resolver');
 const { domainMatches } = require('../src/core/domains');
+const config = require('../src/core/config');
 
 let passed = 0;
 let failed = 0;
@@ -113,16 +115,25 @@ async function after() {
 async function daemonTest() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auren-daemon-'));
   const cfgFile = path.join(dir, 'config.json');
+  const keyFile = path.join(dir, 'auren.key');
+  const hbFile = path.join(dir, 'heartbeat.json');
   const actFile = path.join(dir, 'activity.jsonl');
   const stateFile = path.join(dir, 'state.json');
   const port = 53000 + (process.pid % 1000);
+  const key = crypto.randomBytes(32);
+  fs.writeFileSync(keyFile, key, { mode: 0o600 });
 
-  fs.writeFileSync(cfgFile, JSON.stringify({ version: 1, mode: 'on', blocklist: ['bank.com'] }));
+  const writeCfg = (mode, blocklist, failClosed) =>
+    config.writeSignedConfig(cfgFile, { version: 1, mode, blocklist, failClosed: !!failClosed }, key);
+
+  writeCfg('on', ['bank.com'], false);
   fs.writeFileSync(actFile, '');
 
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'src', 'dns', 'daemon.js')], {
     env: Object.assign({}, process.env, {
       AUREN_CONFIG: cfgFile,
+      AUREN_KEY: keyFile,
+      AUREN_HEARTBEAT: hbFile,
       AUREN_ACTIVITY: actFile,
       AUREN_STATE: stateFile,
       AUREN_DAEMON_LOG: path.join(dir, 'daemon.log'),
@@ -142,10 +153,15 @@ async function daemonTest() {
       assert.strictEqual(r.status, 'NXDOMAIN');
     });
 
+    await test('daemon: writes a fresh heartbeat with integrity OK', async () => {
+      const hb = JSON.parse(fs.readFileSync(hbFile, 'utf8'));
+      assert.ok(Date.now() - hb.ts < 5000);
+      assert.strictEqual(hb.integrityOk, true);
+      assert.strictEqual(hb.pid, child.pid);
+    });
+
     await test('daemon: block list changes apply without restart', async () => {
-      const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
-      cfg.blocklist.push('example.net');
-      fs.writeFileSync(cfgFile, JSON.stringify(cfg));
+      writeCfg('on', ['bank.com', 'example.net'], false);
       await sleep(1500);
       const r = await dig(port, 'example.net');
       assert.strictEqual(r.status, 'NXDOMAIN');
@@ -154,18 +170,25 @@ async function daemonTest() {
     });
 
     await test('daemon: mode off stops blocking', async () => {
-      const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
-      cfg.mode = 'off';
-      fs.writeFileSync(cfgFile, JSON.stringify(cfg));
+      writeCfg('off', ['bank.com'], false);
       await sleep(1500);
       const r = await dig(port, 'bank.com');
       assert.strictEqual(r.status, 'NOERROR');
     });
 
+    await test('daemon: tampered config fails closed (blocks everything)', async () => {
+      // Edit the config file directly WITHOUT updating the signature, like an
+      // agent would. The daemon must refuse to trust it and deny all lookups.
+      fs.writeFileSync(cfgFile, JSON.stringify({ version: 1, mode: 'off', blocklist: [] }));
+      await sleep(1500);
+      const r = await dig(port, 'example.org');
+      assert.strictEqual(r.status, 'NXDOMAIN');
+      const hb = JSON.parse(fs.readFileSync(hbFile, 'utf8'));
+      assert.strictEqual(hb.integrityOk, false);
+    });
+
     await test('daemon: blocked lookups land in the activity log', async () => {
-      const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
-      cfg.mode = 'on';
-      fs.writeFileSync(cfgFile, JSON.stringify(cfg));
+      writeCfg('on', ['bank.com'], false);
       await sleep(1500);
       await dig(port, 'bank.com');
       await sleep(300);
