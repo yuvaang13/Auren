@@ -1,26 +1,41 @@
 /* Auren - policy.js
  *
- * Policy layer over the classifier signal. The classifier (src/core/sensitive.js)
- * only answers "is this sensitive, and which types?"; this module decides what
- * to DO about it. Keep these two decoupled so detection rules can change without
- * touching policy, and vice versa.
+ * Policy layer over classifier signals. The classifiers (src/core/sensitive.js
+ * for outgoing form data, src/core/commands.js for OS/terminal-level commands)
+ * only answer "is this sensitive/network-capable, and which types?"; this
+ * module decides what to DO about it. Keep detection and policy decoupled so
+ * rules can change without touching detection, and vice versa.
  *
  * Decision model (most severe wins):
  *   action: 'allow' | 'log' | 'require_auth' | 'block'
  *
- * Default rules map a classifier type to an action. Tuning is a config change,
- * not a code change (see README "Sensitive-action policy").
+ * Default rules:
+ *   - outgoing sensitive data (autofill gate) -> require native OS auth
+ *   - network-capable OS/terminal commands (command gate) -> BLOCK
+ *
+ * Tuning is a config change, not a code change (see README "Sensitive-action
+ * policy" and "Terminal & OS-level network access").
  */
 
 'use strict';
 
-// Conservative defaults: anything sensitive asks for native OS auth.
+// Conservative defaults:
+//  - Anything sensitive asks for native OS auth.
+//  - OS/terminal-level network commands are blocked by default.
 const DEFAULT_RULES = Object.freeze({
   ssn: 'require_auth',
   credit_card: 'require_auth',
   password: 'require_auth',
   email_password: 'require_auth',
-  secret: 'require_auth'
+  secret: 'require_auth',
+  cmd_ssh: 'block',
+  cmd_ping: 'block',
+  cmd_probe: 'block',
+  cmd_tunnel: 'block',
+  cmd_transfer: 'block',
+  cmd_reverse_shell: 'block',
+  cmd_remote_admin: 'block',
+  cmd_exfil: 'block'
 });
 
 const SEVERITY = { allow: 1, log: 2, require_auth: 3, block: 4 };

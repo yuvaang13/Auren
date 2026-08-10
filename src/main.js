@@ -36,6 +36,7 @@ const config = require('./core/config');
 const activity = require('./core/activity');
 const store = require('./core/store');
 const sensitive = require('./core/sensitive');
+const commands = require('./core/commands');
 const policy = require('./core/policy');
 const { normalizeDomain, domainMatches, validateBlockDomain } = require('./core/domains');
 const dnsController = require('./platform/dns-controller');
@@ -78,7 +79,7 @@ let offCooldownTimer = null;
 let offCooldownUntil = 0;
 
 // The canonical, main-process-owned block state.
-let blockState = { version: 1, mode: 'off', blocklist: [], failClosed: false, lock: { state: 'locked', unlockExpiry: 0 } };
+let blockState = { version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, lock: { state: 'locked', unlockExpiry: 0 } };
 let storeIntegrityKey = null;
 
 // True when enforcement can't be trusted (daemon silent, tampered/corrupt
@@ -161,6 +162,29 @@ function policyRulesFromSettings() {
   return (p && typeof p === 'object') ? p : undefined;
 }
 
+function commandPolicyFromSettings() {
+  const p = readSettings().commandPolicy;
+  return (p && typeof p === 'object') ? p : undefined;
+}
+
+// Terminal/OS-level blocking is tied to Protection Mode and ON by default.
+// A user can disable it (or add an allowlist) via settings.json — the same
+// tunable-policy convention as sensitivePolicy. The daemon only ever trusts
+// the signed config, so the effective values are baked into the snapshot here.
+function effectiveTerminalAllowlist() {
+  const s = readSettings().terminalAllowlist;
+  if (!s || typeof s !== 'object') return blockState.terminalAllowlist;
+  return {
+    ports: Array.isArray(s.ports) ? s.ports : blockState.terminalAllowlist.ports,
+    hosts: Array.isArray(s.hosts) ? s.hosts : blockState.terminalAllowlist.hosts
+  };
+}
+
+function effectiveTerminalBlock() {
+  const s = readSettings();
+  return s.terminalBlock !== false;
+}
+
 function logActivity(entry) {
   activity.appendActivity(ACTIVITY_FILE, entry);
 }
@@ -168,11 +192,19 @@ function logActivity(entry) {
 /* --------------------------- storage & persist --------------------------- */
 
 function normalizeLoadedState(loaded) {
+  const allowlist = (loaded.terminalAllowlist && typeof loaded.terminalAllowlist === 'object')
+    ? {
+        ports: Array.isArray(loaded.terminalAllowlist.ports) ? loaded.terminalAllowlist.ports.filter((p) => Number(p) >= 1 && Number(p) <= 65535) : [],
+        hosts: Array.isArray(loaded.terminalAllowlist.hosts) ? loaded.terminalAllowlist.hosts.map((h) => String(h).trim()).filter(Boolean) : []
+      }
+    : { ports: [], hosts: [] };
   const s = {
     version: 1,
     mode: loaded.mode === 'on' ? 'on' : 'off',
     blocklist: Array.isArray(loaded.blocklist) ? loaded.blocklist.map(normalizeDomain).filter(Boolean) : [],
     failClosed: loaded.failClosed === true,
+    terminalBlock: loaded.terminalBlock !== false,
+    terminalAllowlist: allowlist,
     lock: { state: 'locked', unlockExpiry: 0 }
   };
   if (loaded.lock && loaded.lock.unlockExpiry && loaded.lock.unlockExpiry > Date.now()) {
@@ -194,20 +226,28 @@ function enforceStoragePermissions() {
 }
 
 // Persist canonical state: encrypted store (authoritative) + signed plaintext
-// snapshot (consumed by the root daemon, verified on every read).
+// snapshot (consumed by the root daemon, verified on every read). Terminal/OS
+// blocking defaults ON; settings.json may disable it or add an allowlist, and
+// the effective value is what the daemon sees.
 function persist() {
+  const terminalBlock = effectiveTerminalBlock();
+  const terminalAllowlist = effectiveTerminalAllowlist();
   store.saveSecureStore(USER_DATA, storeIntegrityKey, {
     version: 1,
     mode: blockState.mode,
     blocklist: blockState.blocklist,
     failClosed: blockState.failClosed,
+    terminalBlock,
+    terminalAllowlist,
     lock: blockState.lock
   });
   config.writeSignedConfig(CONFIG_FILE, {
     version: 1,
     mode: blockState.mode,
     blocklist: blockState.blocklist,
-    failClosed: blockState.failClosed
+    failClosed: blockState.failClosed,
+    terminalBlock,
+    terminalAllowlist
   }, storeIntegrityKey);
 }
 
@@ -235,7 +275,7 @@ function ensureFiles() {
     // — we can't trust whatever was in there. Preserve the corrupt file for
     // inspection, then start deny-all (mode ON + failClosed).
     try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.corrupt'); } catch { /* best-effort */ }
-    blockState = { version: 1, mode: 'on', blocklist: [], failClosed: true, lock: { state: 'locked', unlockExpiry: 0 } };
+    blockState = { version: 1, mode: 'on', blocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, lock: { state: 'locked', unlockExpiry: 0 } };
     degraded = true;
     logActivity(activity.makeEntry('daemon', 'integrity_failed', null, 'encrypted store could not be verified: ' + (loadError && loadError.message)));
     notifyDegraded('auren could not verify its encrypted block list and has failed closed. Nothing will be allowed through until you review it.');
@@ -265,6 +305,7 @@ function getState() {
     daemonInstalled: dnsController.isDaemonInstalled(),
     onboardingDone: !!(readSettings().onboardingDone),
     degraded: degraded || blockState.failClosed,
+    terminalBlock: effectiveTerminalBlock(),
     lock: blockState.lock
   };
 }
@@ -331,6 +372,28 @@ function checkHeartbeat() {
     logActivity(activity.makeEntry('daemon', 'enforcement_restored'));
   }
   if (next !== was) pushState();
+  maybeRecoverDaemon();
+}
+
+// A silent service death (launchd teardown race, crashed process) leaves the
+// label "installed" but nothing running, so the normal mode:set reinstall never
+// fires again. When the watchdog is actually degraded with protection expected,
+// try ONE automatic reinstall (bounded — no prompt loops). The OS-native prompt
+// is the same one the user already accepted when they turned protection on.
+let daemonRecoveryAttempted = false;
+function maybeRecoverDaemon() {
+  if (daemonRecoveryAttempted || !degraded) return;
+  if (blockState.mode !== 'on' && !blockState.failClosed) return;
+  if (daemonBusy || (Date.now() - STARTED_AT) < WATCHDOG_GRACE_MS) return;
+  daemonRecoveryAttempted = true;
+  logActivity(activity.makeEntry('daemon', 'recovery_attempted', null, 'service stopped responding; reinstalling the background service'));
+  installDaemon().then((res) => {
+    if (res.ok) {
+      logActivity(activity.makeEntry('daemon', 'recovered', null, 'background service restarted'));
+    } else {
+      logActivity(activity.makeEntry('daemon', 'recovery_failed', null, 'automatic reinstall failed: ' + res.error));
+    }
+  });
 }
 
 function startWatchdog() {
@@ -423,6 +486,52 @@ ipcMain.handle('agent:inspect-action', async (_e, payload) => {
 
   const note = 'types=' + (signal.types.join(',') || 'none');
   logActivity(activity.makeEntry('agent', outcome, null, note));
+  pushState();
+  return { allowed, action: decision.action, types: signal.types, reason: decision.reason };
+});
+
+// Policy-gated checkpoint for OS/terminal-level agent commands (ssh, ping,
+// curl, nc, ...). Mirrors agent:inspect-action but ties enforcement to
+// Protection Mode: when protection is OFF the gate does not stand in the way.
+// While degraded (or the encrypted store is unverified) it refuses — fail-
+// closed. Only a bridge/native host that routes commands through Auren hits
+// this gate; the pf firewall in the root daemon covers everything else.
+ipcMain.handle('agent:inspect-command', async (_e, payload) => {
+  const cmd = (payload && payload.command != null) ? payload.command : payload;
+
+  if (degraded || blockState.failClosed) {
+    logActivity(activity.makeEntry('command', 'blocked', null, 'enforcement degraded'));
+    pushState();
+    return { allowed: false, action: 'block', types: [], reason: 'enforcement degraded' };
+  }
+  if (blockState.mode !== 'on') {
+    return { allowed: true, action: 'allow', types: [], reason: 'protection off' };
+  }
+
+  const signal = commands.classifyCommand(cmd);
+  const decision = policy.decidePolicy(signal, { degraded: false, rules: commandPolicyFromSettings() });
+
+  let allowed = false;
+  let outcome;
+  if (decision.action === 'allow') {
+    allowed = true;
+    outcome = 'allowed';
+  } else if (decision.action === 'log') {
+    allowed = true;
+    outcome = 'logged';
+  } else if (decision.action === 'block') {
+    outcome = 'blocked';
+  } else {
+    // require_auth — only reachable via a custom commandPolicy rule.
+    const typesLabel = signal.types.join(', ') || 'network access';
+    const reason = 'Approve running a network-capable command (' + typesLabel + ')';
+    const ok = await requireNativeAuth(reason);
+    if (ok) { allowed = true; outcome = 'allowed'; }
+    else outcome = 'blocked';
+  }
+
+  const note = 'types=' + (signal.types.join(',') || 'none');
+  logActivity(activity.makeEntry('command', outcome, null, note));
   pushState();
   return { allowed, action: decision.action, types: signal.types, reason: decision.reason };
 });

@@ -1,7 +1,7 @@
 {
   "name": "auren-guardrail",
   "productName": "auren",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Auren — system-wide DNS-level website blocking for AI-agent guardrails. Not an adversarial-proof security boundary.",
   "license": "Apache-2.0",
@@ -10,10 +10,11 @@
     "start": "bash scripts/dev-app.sh",
     "test": "npm run test:unit && npm run test:classifier",
     "test:unit": "node test/unit.test.js",
-    "test:classifier": "node test/sensitive.test.js",
+    "test:classifier": "node test/sensitive.test.js && node test/commands.test.js",
     "test:dns": "node test/dns-server.test.js",
     "test:all": "npm run test:unit && npm run test:classifier && npm run test:dns",
-    "e2e:check": "bash scripts/e2e-check.sh"
+    "e2e:check": "bash scripts/e2e-check.sh",
+    "e2e:pf": "bash scripts/e2e-pf-check.sh"
   },
   "devDependencies": {
     "electron": "^43.3.0"

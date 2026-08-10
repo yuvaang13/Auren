@@ -107,6 +107,25 @@ test('config file survives a corrupt write (safe default: off)', () => {
   assert.deepStrictEqual(cfg.blocklist, []);
 });
 
+test('config defaults terminal blocking on with an empty allowlist', () => {
+  const dir = tmpDir();
+  const cfg = config.readConfig(dir);
+  assert.strictEqual(cfg.terminalBlock, true);
+  assert.deepStrictEqual(cfg.terminalAllowlist, { ports: [], hosts: [] });
+});
+
+test('config round-trips terminalBlock and terminalAllowlist', () => {
+  const dir = tmpDir();
+  const cfg = config.readConfig(dir);
+  cfg.terminalBlock = false;
+  cfg.terminalAllowlist = { ports: [22, 443, 22, 0, 70000], hosts: ['10.0.0.5', 'fd00::1', '', '10.0.0.5'] };
+  config.writeConfig(dir, cfg);
+  const back = config.readConfig(dir);
+  assert.strictEqual(back.terminalBlock, false);
+  assert.deepStrictEqual(back.terminalAllowlist.ports, [22, 443]);
+  assert.deepStrictEqual(back.terminalAllowlist.hosts, ['10.0.0.5', 'fd00::1']);
+});
+
 console.log('signed config');
 test('writeSignedConfig creates config + signature sidecar', () => {
   const dir = tmpDir();
@@ -185,6 +204,20 @@ test('policy fails closed while degraded', () => {
   assert.strictEqual(d.action, 'block');
 });
 
+test('policy blocks network-capable commands by default', () => {
+  for (const t of ['cmd_ssh', 'cmd_ping', 'cmd_probe', 'cmd_tunnel', 'cmd_transfer', 'cmd_reverse_shell', 'cmd_remote_admin', 'cmd_exfil']) {
+    const d = policy.decidePolicy({ sensitive: true, types: [t] });
+    assert.strictEqual(d.action, 'block', t + ' must default to block');
+  }
+});
+
+test('policy honors custom commandPolicy downgrades', () => {
+  const log = policy.decidePolicy({ sensitive: true, types: ['cmd_ssh'] }, { rules: { cmd_ssh: 'log' } });
+  assert.strictEqual(log.action, 'log');
+  const auth = policy.decidePolicy({ sensitive: true, types: ['cmd_ping'] }, { rules: { cmd_ping: 'require_auth' } });
+  assert.strictEqual(auth.action, 'require_auth');
+});
+
 console.log('activity');
 test('activity appends and reads back entries', () => {
   const dir = tmpDir();
@@ -217,6 +250,63 @@ test('activity toPlainText covers agent + daemon integrity outcomes', () => {
   assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'enforcement_degraded')).includes('DEGRADED'));
   assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'integrity_failed')).includes('failed closed'));
   assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'permissions_fixed')).includes('owner-only'));
+});
+
+test('activity toPlainText covers command + pf outcomes', () => {
+  assert.ok(activity.toPlainText(activity.makeEntry('command', 'blocked', null, 'types=cmd_ssh')).includes('Agent command blocked'));
+  assert.ok(activity.toPlainText(activity.makeEntry('command', 'allowed', null, 'types=none')).includes('Agent command allowed'));
+  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'pf_applied')).includes('firewall rules applied'));
+  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'pf_cleared')).includes('restored'));
+  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'pf_failed', null, 'boom')).includes('could not be applied'));
+});
+
+console.log('pf firewall rules');
+const pf = require('../src/dns/pf');
+
+test('buildAnchorRules always passes loopback, DNS, and browsing', () => {
+  const rules = pf.buildAnchorRules({});
+  const joined = rules.join('\n');
+  assert.ok(joined.includes('pass in  on lo0 all'));
+  assert.ok(joined.includes('pass out on lo0 all'));
+  assert.ok(joined.includes('port 53'));
+  assert.ok(joined.includes('port 80'));
+  assert.ok(joined.includes('port 443'));
+});
+
+test('buildAnchorRules blocks ping, command ports, and cloud metadata by default', () => {
+  const rules = pf.buildAnchorRules({});
+  const joined = rules.join('\n');
+  assert.ok(joined.includes('block out proto icmp'));
+  assert.ok(joined.includes('22'));
+  assert.ok(joined.includes('3389'));
+  assert.ok(joined.includes('169.254.169.254'));
+});
+
+test('buildAnchorRules puts allowlist rules before block rules', () => {
+  const rules = pf.buildAnchorRules({ allowPorts: [22, 443], allowHosts: ['10.0.0.5', '192.168.1.0/24'] });
+  const pass22 = rules.indexOf('pass out proto { tcp udp } to port 22');
+  const blockPorts = rules.findIndex((r) => r.startsWith('block out proto { tcp udp } to port'));
+  const passHost = rules.indexOf('pass out proto { tcp udp } to 10.0.0.5');
+  assert.ok(pass22 > -1 && pass22 < blockPorts, 'allowed port must precede block rules');
+  assert.ok(passHost > -1 && passHost < blockPorts, 'allowed host must precede block rules');
+});
+
+test('buildAnchorRules normalizes and rejects invalid allowlist entries', () => {
+  const rules = pf.buildAnchorRules({ allowPorts: [22, 22, 70000, 'abc', 0], allowHosts: ['10.0.0.5', 'not a host', '', '300.1.1.1', 'fd00::1'] });
+  assert.ok(rules.includes('pass out proto { tcp udp } to port 22'));
+  assert.ok(rules.includes('pass out proto { tcp udp } to 10.0.0.5'));
+  assert.ok(rules.includes('pass out proto { tcp udp } to fd00::1'));
+  assert.ok(!rules.some((r) => r.includes('300.1.1.1') || r.includes('not a host')));
+  assert.ok(!rules.some((r) => r.includes('port 70000') || r.includes('port 0')));
+});
+
+test('isValidHostEntry accepts IPs and CIDRs only', () => {
+  assert.ok(pf.isValidHostEntry('10.0.0.5'));
+  assert.ok(pf.isValidHostEntry('192.168.1.0/24'));
+  assert.ok(pf.isValidHostEntry('fd00::1'));
+  assert.ok(!pf.isValidHostEntry('example.com'));
+  assert.ok(!pf.isValidHostEntry('999.1.1.1'));
+  assert.ok(!pf.isValidHostEntry(''));
 });
 
 console.log('dns-message');

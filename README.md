@@ -72,6 +72,16 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
   connection; close and reopen it.
 - **It blocks by domain name, not IP address.** Direct IP connections bypass
   DNS and are not blocked. The app rejects IP entries for exactly this reason.
+- **A terminal command that only uses HTTPS is indistinguishable from a
+  browser.** The OS-level firewall (below) blocks ICMP ping, SSH/FTP/Telnet and
+  other command ports, and cloud-metadata IPs — but `curl`/`wget` to an
+  arbitrary HTTPS host uses the same port 443 as normal browsing, so a port
+  rule can't stop it without breaking the web.
+- **It does not stop local code execution that makes no network calls.** The
+  firewall and the command gate only cover network-capable commands. An agent
+  running `rm -rf`, `osascript`, or compiling and running a binary locally is
+  outside Auren's reach — stopping that needs the agent itself to run inside a
+  sandbox (a documented future direction, see below).
 
 ## Storage, integrity, and fail-closed guarantees
 
@@ -180,6 +190,62 @@ layer (`src/core/policy.js`) that decides what to do about it:
   calls it before allowing an agent's form submission through; Auren returns
   `{ allowed, action, types, reason }` and logs the outcome like a site block.
 
+## Terminal & OS-level network access (default blocking)
+
+Auren also guards against an AI agent reaching out **at the OS/terminal level** —
+`ping`, `ssh`, `scp`, `nc`, `telnet`, `curl` to command ports, or stealing
+cloud-instance credentials. This is a **default-on** feature: while Protection
+Mode is ON, both layers below are active with no setup. It is ON by default and
+tied to the same switch as website blocking.
+
+### Layer 1 — an OS firewall (pf) in the root daemon
+
+The root daemon loads a dedicated macOS packet-filter (`pf`) anchor named
+`auren` whenever Protection is ON. Because it matches **IPs and ports, not
+names**, it closes the gap where direct-IP commands (`ssh user@1.2.3.4`,
+`ping 8.8.8.8`) sail past DNS blocking:
+
+- **Blocked by default:** ICMP echo and traceroute (`ping`, `mtr`);
+  outbound to command-tool ports — 21 FTP, 22 SSH/SCP/SFTP, 23 Telnet,
+  25 SMTP, 110/143/993/995 mail, 135/137/138/139/445 NetBIOS/SMB,
+  465/587 submission, 1080 SOCKS, 3389 RDP, 5900 VNC; and the cloud-metadata
+  endpoints `169.254.169.254`, `169.254.169.253`, `100.100.100.200` (how an
+  agent steals instance credentials — these are IPs, so only a firewall can
+  see them).
+- **Always allowed:** loopback, DNS (port 53), and browsing (ports 80/443) —
+  the anchor never strands the machine, and HTTPS browsing keeps working.
+- **Allowlist:** `terminalAllowlist` in `settings.json` can re-open specific
+  ports and IP/CIDR hosts (pf matches IPs, so hostnames aren't supported there).
+- **System-wide while ON:** pf rules apply to every process — including your
+  own terminal. `ssh`/`ping` from your terminal are blocked too until
+  Protection is turned OFF, which clears the anchor. That's the locked state,
+  and the UI says so.
+- **Safety:** Auren only ever touches its own `auren` anchor — it never
+  flushes or rewrites a pre-existing pf configuration, and never disables pf
+  on teardown (an enabled pf with an empty anchor passes everything).
+- **Fail-closed:** if the signed config can't be verified, the daemon loads
+  the blocking rules too, matching the DNS deny-all posture.
+
+### Layer 2 — a command gate for agents that run through Auren
+
+`agent:inspect-command` is the OS-command twin of `agent:inspect-action`
+(see above). A future bridge / native-messaging host that routes an agent's
+commands through Auren calls it before executing them. The classifier
+(`src/core/commands.js`) recognizes ssh/scp/sftp/rsync sessions, ping and
+traceroute, port probes (`nc`, `telnet`, `nmap`), ssh tunnels (`-L/-R/-D`),
+file transfers (`curl`, `wget`, `aws s3`, `gsutil`), classic reverse-shell
+patterns (`nc -e`, `bash -i >& /dev/tcp/`, `python -c socket`, …), remote
+database/cluster admin, and credential-store exfiltration pipelines
+(`cat ~/.aws/credentials | nc …`). **Default policy: block.** Tuning lives in
+`settings.json` (`commandPolicy`, e.g. `{ "commandPolicy": { "cmd_transfer":
+"require_auth" } }`). The gate is active only while Protection is ON; while
+degraded it refuses (fail-closed). Every outcome is logged like a site block.
+
+The honest boundary: Layer 2 only helps when the agent's commands actually go
+through Auren's bridge. A raw terminal session Auren can't see is covered by
+Layer 1 (the pf firewall) instead. And no layer here stops local,
+network-free code execution — that needs the agent sandboxed.
+
 ## Why the biometric gate exists
 
 Turning protection **on** is instant and frictionless — a user (or an agent)
@@ -255,14 +321,16 @@ src/
     config.js             config.json read/write (atomic) + HMAC signing, shared
     store.js              encrypted at-rest store (AES-256-GCM) for block state
     sensitive.js          outgoing form-data classifier (PII / credentials)
-    policy.js             decision layer over the classifier signal (auth-gate)
+    commands.js           OS/terminal command classifier (ssh, ping, exfil, ...)
+    policy.js             decision layer over classifier signals (block / auth-gate)
     activity.js           plain-language activity log (JSONL)
   dns/
     dns-message.js        minimal DNS wire parsing / NXDOMAIN building
     resolver.js           the local DNS server (UDP + TCP, blocks + forwards)
     cache.js              flushes macOS DNS caches on mode/block-list changes
+    pf.js                 macOS pf firewall anchor rules (block ping/ssh/...)
     daemon.js             root service: verifies config signature, fails closed,
-                          writes heartbeat, reconciles DNS, runs the resolver
+                          writes heartbeat, reconciles DNS + pf, runs the resolver
   platform/
     biometrics.js         macOS Touch ID / passcode gate (OS-native, pass/fail)
     dns-controller.js     daemon install + enforcement-status checks
@@ -283,7 +351,8 @@ Persistence lives in three small places:
 - `~/Library/Application Support/Auren/config.json` + `config.sig` — a
   **signed snapshot** exported by the app for the root daemon, which verifies
   the signature on every poll and fails closed (deny-all) if it doesn't check
-  out. The daemon treats this file as untrusted input.
+  out. The daemon treats this file as untrusted input. It carries protection
+  mode, the block list, the terminal-block toggle, and the firewall allowlist.
 - `~/Library/Application Support/Auren/activity.jsonl` — the plain-language log.
 
 `/Library/LaunchDaemons/com.auren.guardrail.plist` and `/usr/local/lib/auren/`
@@ -305,6 +374,11 @@ sudo rm -rf /usr/local/lib/auren "/Library/Application Support/Auren"
 - **Recent activity** — plain-language lines like
   "Blocked: attempt to reach bank.com · Aug 7, 2:14 PM". Only domain, time, and
   outcome — never any data.
+- **Terminal & OS-level access** — no separate toggle: while Protection is on,
+  the OS firewall and the command gate are active by default. An
+  **OS commands blocked** stat and plain-language activity lines
+  ("OS-level terminal access blocked (firewall rules applied) · …",
+  "Agent command blocked (cmd_ssh) · …") report when they fire.
 
 Every Protection Mode change and every block is written to the activity log
 with a timestamp and outcome, so there's a local audit trail of *who turned
@@ -321,13 +395,16 @@ protection off and when* — without ever logging credentials or biometrics.
 ## Running the tests
 
 ```bash
-npm run test:unit        # 26 assertions: domains, config, signing, store, policy, activity
-npm run test:classifier  # 12 assertions: form-data classifier samples
-npm run test:dns         # 10 assertions: real resolver + daemon with dig, no privileges
+npm run test:unit        # 36 assertions: domains, config, signing, store, policy, pf rules, activity
+npm run test:classifier  # 25 assertions: form-data + OS-command classifiers
+npm run test:dns         # 14 assertions: real resolver + daemon with dig, no privileges
 npm test                 # unit + classifier
 npm run test:all         # everything
-npm run e2e:check        # REAL system-wide check (daemon installed + Protection ON):
+npm run e2e:check        # REAL system-wide DNS check (daemon installed + Protection ON):
                          #   blocked domain -> NXDOMAIN, normal domain -> resolves
+sudo npm run e2e:pf          # REAL OS-firewall check (Protection ON, as root):
+                             #   pf anchor loaded, ping blocked, ssh port blocked, HTTPS ok
+                             #   (or: sudo bash scripts/e2e-pf-check.sh, from the repo root)
 ```
 
 `e2e:check` temporarily adds `auren-e2e-check.test` to the block list, verifies
@@ -358,6 +435,14 @@ Yes. Blocking `bank.com` also blocks `mail.bank.com`. But not
 VPNs sometimes force their own DNS, which can conflict with pointing DNS at
 Auren. This is a known rough edge of DNS-level blocking, not something Auren
 hides. Turn protection off (or remove the VPN) if it interferes.
+
+**Why is my own terminal's `ssh` / `ping` blocked while Protection is on?**
+That's the OS firewall doing its job. While Protection Mode is ON it blocks
+command ports (SSH, FTP, Telnet…) and ICMP for every process on the Mac —
+including your terminal — because an AI agent on this Mac could be using that
+same terminal. Turning Protection off clears the rules within ~1 second. If you
+need a specific port or IP open while protected, add it to `terminalAllowlist`
+in `settings.json` (ports and IPs/CIDRs; pf matches IPs, not hostnames).
 
 **I flipped protection ON but a site I was just on still loads.**
 That site was already resolved (and possibly still connected) from before

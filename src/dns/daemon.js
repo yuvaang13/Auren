@@ -34,6 +34,7 @@ function load(name) {
 
 const { DnsResolver, DEFAULT_UPSTREAM } = require(path.join(__dirname, 'resolver.js'));
 const { flushDnsCacheAsync } = require(path.join(__dirname, 'cache.js'));
+const pf = require(path.join(__dirname, 'pf.js'));
 const { domainMatches } = load('domains.js');
 const { readConfigFile, verifyData } = load('config.js');
 const { makeEntry, appendActivity } = load('activity.js');
@@ -59,6 +60,8 @@ const KEY_FILE = process.env.AUREN_KEY;
 const HEARTBEAT = process.env.AUREN_HEARTBEAT;
 const DNS_ENABLED = String(process.env.AUREN_DNS_ENABLED || '1') !== '0';
 const PORT = parseInt(process.env.AUREN_PORT || '53', 10);
+const PF_ENABLED = String(process.env.AUREN_PF_ENABLED || '1') !== '0';
+const PF_RULES = process.env.AUREN_PF_RULES || path.join(__dirname, 'pf.rules');
 
 const POLL_MS = 800;
 const LOG_THROTTLE_MS = 5000;
@@ -66,13 +69,20 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 5;
+const DAEMON_VERSION = 6;
 
 let mode = 'off';
 let blocklist = [];
 let resolver = null;
 let upstreamApplied = false;
 let state = { services: {}, applied: false };
+
+// OS/terminal-level network blocking (pf anchor), tied to Protection Mode.
+let terminalBlock = true;
+let terminalAllowlist = { ports: [], hosts: [] };
+let pfActive = false;
+let lastAnchorJson = '';
+let pfFailReported = false;
 
 // Last-applied policy, used to detect real changes (mode switch, DNS switch,
 // block-list edit) so we only flush the OS DNS cache when it matters — not on
@@ -119,7 +129,7 @@ function loadIntegrityKey() {
 // unprivileged app must be able to read it. It contains no secrets.
 function writeHeartbeat() {
   if (!HEARTBEAT) return;
-  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, version: DAEMON_VERSION, mode, failClosed, integrityOk: !failClosed }) + '\n';
+  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, version: DAEMON_VERSION, mode, failClosed, pf: pfActive, integrityOk: !failClosed }) + '\n';
   try { fs.writeFileSync(HEARTBEAT, body, { mode: 0o644 }); } catch (err) { log('error', 'heartbeat write failed: ' + err.message); }
 }
 
@@ -317,10 +327,14 @@ async function reconcile() {
   if (cfg) {
     mode = cfg.mode;
     blocklist = cfg.blocklist;
+    terminalBlock = cfg.terminalBlock !== false;
+    terminalAllowlist = cfg.terminalAllowlist || { ports: [], hosts: [] };
   } else {
     // Fail-closed: we can't trust the config, so block everything.
     mode = 'on';
     blocklist = [];
+    terminalBlock = true;
+    terminalAllowlist = { ports: [], hosts: [] };
   }
 
   if (!resolver) {
@@ -366,6 +380,52 @@ async function reconcile() {
   // previously-cached sites are forced to re-resolve through this resolver.
   if (DNS_ENABLED && (dnsChanged || modeChanged || blocklistChanged)) {
     flushCache();
+  }
+
+  // OS/terminal-level network blocking via the pf anchor. Engages whenever
+  // protection is on (or we are fail-closed) and terminal blocking is enabled.
+  // Rules are only reloaded when their content actually changes, mirroring the
+  // block-list change detection above. Failures are logged (once per failure
+  // window) and retried on the next poll; they must never affect DNS
+  // enforcement.
+  const osBlock = PF_ENABLED && (mode === 'on' || failClosed) && terminalBlock;
+  const rules = osBlock ? pf.buildAnchorRules({ allowPorts: terminalAllowlist.ports, allowHosts: terminalAllowlist.hosts }) : [];
+  const rulesJson = JSON.stringify(rules);
+  if (osBlock && rulesJson !== lastAnchorJson) {
+    try {
+      fs.writeFileSync(PF_RULES, rules.join('\n') + '\n', { mode: 0o600 });
+      const res = pf.applyAnchor(PF_RULES);
+      if (res.ok) {
+        if (!pfActive) logActivity(makeEntry('daemon', 'pf_applied'));
+        pfActive = true;
+        pfFailReported = false;
+        lastAnchorJson = rulesJson;
+        log('info', 'pf anchor loaded (' + rules.length + ' rules)');
+      } else {
+        if (!pfFailReported) {
+          logActivity(makeEntry('daemon', 'pf_failed', null, res.error));
+          pfFailReported = true;
+        }
+        log('error', 'pf apply failed: ' + res.error);
+      }
+    } catch (err) {
+      if (!pfFailReported) {
+        logActivity(makeEntry('daemon', 'pf_failed', null, err.message));
+        pfFailReported = true;
+      }
+      log('error', 'pf apply failed: ' + err.message);
+    }
+  } else if (!osBlock && pfActive) {
+    const res = pf.clearAnchor();
+    if (res.ok) {
+      pfActive = false;
+      pfFailReported = false;
+      lastAnchorJson = '';
+      logActivity(makeEntry('daemon', 'pf_cleared'));
+      log('info', 'pf anchor cleared');
+    } else {
+      log('error', 'pf clear failed: ' + res.error);
+    }
   }
 
   writeHeartbeat();

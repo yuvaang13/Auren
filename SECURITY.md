@@ -19,6 +19,13 @@ This policy covers defects that undermine the guarantees it *does* claim:
 - **centralized block state**: the canonical block list lives only in the main
   process (encrypted at rest, 0600 perms, verified at startup); no renderer or
   bridge component holds its own writable copy;
+- **OS/terminal-level network blocking**: while Protection is ON the root
+  daemon loads a dedicated pf anchor (`auren`) that blocks ICMP echo, outbound
+  command ports (SSH/FTP/Telnet/SMB/…), and cloud-metadata IPs. The daemon
+  must only ever touch its own anchor — never the main pf ruleset, never
+  flushing a pre-existing pf configuration, never disabling pf on teardown —
+  and must load the blocking rules when it cannot verify the signed config
+  (fail-closed), matching the DNS deny-all posture;
 - **the privacy invariant**: no biometric or credential data ever passes
   through Auren's process — it only consumes pass/fail results from OS APIs;
 - **accidental collection or transmission of private data** (the activity log
@@ -32,7 +39,11 @@ do yet" and "Storage, integrity, and fail-closed guarantees" (e.g. an agent
 with root reconfiguring DNS or stopping the daemon, an admin removing the
 OS-level hook outside the app, same-account read-all defeating at-rest
 encryption, or apps using their own DoH resolver) — those are accepted
-limitations, not vulnerabilities.
+limitations, not vulnerabilities. The OS firewall is likewise a cooperative
+layer with known limits: terminal `curl`/`wget` to HTTPS (port 443) is
+indistinguishable from browsing and is not blocked, and network-free local code
+execution (`rm -rf`, `osascript`, compiled binaries) is outside Auren's reach
+— stopping that requires the agent itself to run in a sandbox.
 
 ## Reporting
 

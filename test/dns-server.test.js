@@ -139,6 +139,7 @@ async function daemonTest() {
       AUREN_STATE: stateFile,
       AUREN_DAEMON_LOG: path.join(dir, 'daemon.log'),
       AUREN_DNS_ENABLED: '0',
+      AUREN_PF_ENABLED: '0',
       AUREN_PORT: String(port)
     }),
     stdio: 'ignore'
@@ -159,6 +160,7 @@ async function daemonTest() {
       assert.ok(Date.now() - hb.ts < 5000);
       assert.strictEqual(hb.integrityOk, true);
       assert.strictEqual(hb.pid, child.pid);
+      assert.strictEqual(hb.pf, false, 'pf must stay off when AUREN_PF_ENABLED=0');
     });
 
     await test('daemon: block list changes apply without restart', async () => {

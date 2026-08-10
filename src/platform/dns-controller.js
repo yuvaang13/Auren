@@ -24,7 +24,7 @@ const DAEMON_LIB = '/usr/local/lib/auren';
 // app compares the installed daemon's version against this and re-runs the
 // installer when they disagree, so a running launchd job never silently keeps
 // old behavior after an app update. Keep in sync with daemon.js DAEMON_VERSION.
-const DAEMON_VERSION = 5;
+const DAEMON_VERSION = 6;
 
 function isDaemonInstalled() {
   return fs.existsSync(PLIST);
@@ -87,10 +87,10 @@ function findNodeBin(exePath) {
 }
 
 function buildInstallerScript(opts) {
-  // `srcDir` must contain all seven modules flat (daemon, resolver,
-  // dns-message, cache, domains, config, activity). The app stages them into a
-  // temp dir first so the privileged installer can read them (root can't
-  // always read files under TCC-protected folders like ~/Desktop).
+  // `srcDir` must contain all eight modules flat (daemon, resolver,
+  // dns-message, cache, pf, domains, config, activity). The app stages them
+  // into a temp dir first so the privileged installer can read them (root
+  // can't always read files under TCC-protected folders like ~/Desktop).
   const src = opts.srcDir;
   const cfg = opts.configPath;
   const act = opts.activityPath;
@@ -105,7 +105,7 @@ function buildInstallerScript(opts) {
     'SPOOL=' + shellQuote(spool),
     'SRC=' + shellQuote(src),
     'mkdir -p "$LIB" "$SPOOL"',
-    'cp "$SRC/dns-message.js" "$SRC/resolver.js" "$SRC/daemon.js" "$SRC/cache.js" "$SRC/domains.js" "$SRC/config.js" "$SRC/activity.js" "$LIB/"',
+    'cp "$SRC/dns-message.js" "$SRC/resolver.js" "$SRC/daemon.js" "$SRC/cache.js" "$SRC/pf.js" "$SRC/domains.js" "$SRC/config.js" "$SRC/activity.js" "$LIB/"',
     'chmod 755 "$LIB/daemon.js"',
     'cat > ' + shellQuote(PLIST) + ' <<PLIST',
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -151,37 +151,57 @@ function buildInstallerScript(opts) {
     '</dict>',
     '</plist>',
     'PLIST',
+    'exec >> "$SPOOL/install.log" 2>&1',
+    'echo "=== auren installer $(/bin/date -u +%FT%TZ) pid $$ ==="',
+    'HB=' + shellQuote(hb),
+    'OLD_M=0',
+    'if [ -f "$HB" ]; then OLD_M=$(/usr/bin/stat -f %m "$HB" 2>/dev/null || echo 0); fi',
     '/bin/launchctl bootout system/com.auren.guardrail 2>/dev/null || /bin/launchctl unload ' + shellQuote(PLIST) + ' 2>/dev/null || true',
-    '/bin/launchctl bootstrap system ' + shellQuote(PLIST) + ' 2>/dev/null || /bin/launchctl load -w ' + shellQuote(PLIST),
+    // bootout tears the old service down asynchronously; its label can linger
+    // for seconds. Bootstrapping over it fails, and the old daemon keeps
+    // writing fresh heartbeats in the meantime — which used to make a failed
+    // install look successful. Wait for the label to fully disappear before
+    // bootstrapping.
+    'i=0',
+    'while /bin/launchctl print system/com.auren.guardrail >/dev/null 2>&1 && [ "$i" -lt 15 ]; do /bin/sleep 1; i=$((i + 1)); done',
+    'i=0',
+    'OK=0',
+    'while [ "$i" -lt 5 ] && [ "$OK" -eq 0 ]; do',
+    '  if /bin/launchctl bootstrap system ' + shellQuote(PLIST) + ' 2>/dev/null || /bin/launchctl load -w ' + shellQuote(PLIST) + ' 2>/dev/null; then OK=1; fi',
+    '  if [ "$OK" -eq 0 ]; then /bin/sleep 1; fi',
+    '  i=$((i + 1))',
+    'done',
+    'if [ "$OK" -eq 0 ]; then echo "bootstrap failed after retries" >&2; echo AUREN_INSTALL_FAILED >&2; exit 1; fi',
+    'echo "bootstrapped — waiting for a v' + DAEMON_VERSION + ' heartbeat"',
     // A loaded label is not a running daemon: launchd can know the service while
     // the process fails to actually start (port 53 still busy after bootout,
-    // node crash, launchd teardown race). Only report success once the daemon is
-    // demonstrably alive — the daemon writes a fresh heartbeat every ~2 s from
-    // the moment it starts. Otherwise exit non-zero so the app shows a real
-    // setup failure instead of a false "installed".
-    'if ! /bin/launchctl print system/com.auren.guardrail >/dev/null 2>&1; then echo AUREN_INSTALL_FAILED >&2; exit 1; fi',
-    'HB=' + shellQuote(hb),
+    // node crash, teardown race). Success is ONLY a heartbeat written by the
+    // NEW code: a file newer than the one that existed before this install AND
+    // carrying the version we just installed. The old daemon's goodbye
+    // heartbeat must never count. Otherwise exit non-zero so the app shows a
+    // real setup failure instead of a false "installed".
     'i=0',
-    'while [ "$i" -lt 12 ]; do',
-    '  if [ -f "$HB" ] && [ "$(( $(/bin/date +%s) - $(/usr/bin/stat -f %m "$HB") ))" -lt 6 ]; then',
+    'while [ "$i" -lt 15 ]; do',
+    '  if [ -f "$HB" ] && [ "$(/usr/bin/stat -f %m "$HB" 2>/dev/null || echo 0)" -gt "$OLD_M" ] && /bin/grep -q ' + JSON.stringify('"version":' + DAEMON_VERSION + '[,}]') + ' "$HB"; then',
     '    echo AUREN_INSTALL_OK',
     '    exit 0',
     '  fi',
     '  /bin/sleep 1',
     '  i=$((i + 1))',
     'done',
+    'echo "no fresh v' + DAEMON_VERSION + ' heartbeat after restart" >&2',
     'echo AUREN_INSTALL_FAILED >&2',
     'exit 1'
   ].join('\n');
 }
 
-// Stages the seven flat daemon modules into a temp dir readable by the
+// Stages the eight flat daemon modules into a temp dir readable by the
 // privileged installer.
 function stageDaemonFiles() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auren-stage-'));
   const dnsDir = path.join(__dirname, '..', 'dns');
   const coreDir = path.join(__dirname, '..', 'core');
-  for (const f of ['daemon.js', 'resolver.js', 'dns-message.js', 'cache.js']) {
+  for (const f of ['daemon.js', 'resolver.js', 'dns-message.js', 'cache.js', 'pf.js']) {
     fs.copyFileSync(path.join(dnsDir, f), path.join(dir, f));
   }
   for (const f of ['domains.js', 'config.js', 'activity.js']) {

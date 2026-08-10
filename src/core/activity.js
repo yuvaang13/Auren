@@ -14,15 +14,18 @@ const fs = require('fs');
 const path = require('path');
 
 // kinds: 'block' (a lookup was refused), 'toggle' (protection mode change),
-//        'agent' (an agent form action gated by policy), 'daemon' (resolver
-//        lifecycle / integrity / errors)
+//        'agent' (an agent form action gated by policy), 'command' (an
+//        OS/terminal-level command gated by policy), 'daemon' (resolver /
+//        firewall / integrity / errors)
 // outcome: for block -> 'blocked' | 'allowed'; for toggle -> 'on' | 'off' |
 //          'off_pending' (verified, waiting out the cooldown) | 'off_failed' |
 //          'off_cancelled'; for agent -> 'allowed' | 'blocked' | 'logged';
+//          for command -> 'allowed' | 'blocked' | 'logged';
 //          for daemon -> 'started' | 'stopped' | 'error' | 'dns_applied' |
-//          'dns_restored' | 'enforcement_degraded' | 'enforcement_restored' |
+//          'dns_restored' | 'pf_applied' | 'pf_cleared' | 'pf_failed' |
+//          'enforcement_degraded' | 'enforcement_restored' |
+//          'recovery_attempted' | 'recovered' | 'recovery_failed' |
 //          'integrity_failed' | 'permissions_fixed'
-//          | 'error' | 'dns_applied' | 'dns_restored'
 function makeEntry(kind, outcome, domain, note) {
   return { ts: new Date().toISOString(), kind, outcome, domain: domain || null, note: note || null };
 }
@@ -65,11 +68,22 @@ function toPlainText(entry) {
       if (entry.outcome === 'blocked') return `Agent form submission blocked (sensitive${entry.note ? ': ' + entry.note : ''}) \u00b7 ${time}`;
       if (entry.outcome === 'logged') return `Agent form submission logged (sensitive${entry.note ? ': ' + entry.note : ''}) \u00b7 ${time}`;
       return `Agent action \u00b7 ${time}`;
+    case 'command':
+      if (entry.outcome === 'allowed') return `Agent command allowed${entry.note ? ' (' + entry.note + ')' : ''} \u00b7 ${time}`;
+      if (entry.outcome === 'blocked') return `Agent command blocked${entry.note ? ' (' + entry.note + ')' : ''} \u00b7 ${time}`;
+      if (entry.outcome === 'logged') return `Agent command logged${entry.note ? ' (' + entry.note + ')' : ''} \u00b7 ${time}`;
+      return `Agent command \u00b7 ${time}`;
     case 'daemon':
       if (entry.outcome === 'dns_applied') return `DNS pointing at Auren (system-wide) \u00b7 ${time}`;
       if (entry.outcome === 'dns_restored') return `DNS restored to normal \u00b7 ${time}`;
+      if (entry.outcome === 'pf_applied') return `OS-level terminal access blocked (firewall rules applied) \u00b7 ${time}`;
+      if (entry.outcome === 'pf_cleared') return `OS-level terminal access restored (firewall rules removed) \u00b7 ${time}`;
+      if (entry.outcome === 'pf_failed') return `OS-level firewall rules could not be applied${entry.note ? ': ' + entry.note : ''} \u00b7 ${time}`;
       if (entry.outcome === 'enforcement_degraded') return `ENFORCEMENT DEGRADED \u2014 background service stopped responding \u00b7 ${time}`;
       if (entry.outcome === 'enforcement_restored') return `Enforcement recovered \u2014 background service is responding again \u00b7 ${time}`;
+      if (entry.outcome === 'recovery_attempted') return `Background service recovered automatically \u00b7 ${time}`;
+      if (entry.outcome === 'recovered') return `Background service restarted and responding \u00b7 ${time}`;
+      if (entry.outcome === 'recovery_failed') return `Background service could not be restored automatically${entry.note ? ': ' + entry.note : ''} \u00b7 ${time}`;
       if (entry.outcome === 'integrity_failed') return `INTEGRITY FAILURE \u2014 block list could not be verified; Auren failed closed \u00b7 ${time}`;
       if (entry.outcome === 'permissions_fixed') return `Storage permissions tightened to owner-only \u00b7 ${time}`;
       if (entry.outcome === 'error') return `Auren background service error${entry.note ? ': ' + entry.note : ''} \u00b7 ${time}`;

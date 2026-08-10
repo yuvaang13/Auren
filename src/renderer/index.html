@@ -32,7 +32,7 @@
         <h1>welcome to auren</h1>
         <p class="ob-lead">A private guardrail for your AI agents.</p>
         <p>Auren blocks specific websites from being reached by anything on this computer &mdash; including AI agents &mdash; until you turn it off with your fingerprint or passcode.</p>
-        <p>It works below every browser and app, at the network level, so it can&rsquo;t be skipped by opening a different browser.</p>
+        <p>It works below every browser and app, at the network level, so it can&rsquo;t be skipped by opening a different browser. While protection is on, it also blocks terminal and OS-level network access (ping, ssh, FTP, cloud metadata).</p>
         <button class="primary" id="ob-next-1" type="button">Next</button>
       </div>
       <div class="onboarding-step hidden" id="ob-step-2">
@@ -128,6 +128,10 @@
           <span class="stat-label">Actions gated</span>
           <span class="stat-value" id="stat-gated">0</span>
         </section>
+        <section class="stat-tile">
+          <span class="stat-label">OS commands blocked</span>
+          <span class="stat-value" id="stat-os">0</span>
+        </section>
       </div>
 
       <section class="card sites-card">
@@ -150,6 +154,7 @@
         <div class="empty hidden" id="block-empty">
           <span>No sites blocked yet. Add one above to make it unreachable on this Mac.</span>
         </div>
+        <p class="note">While Protection is on, Auren also blocks OS/terminal-level network access on this Mac &mdash; ping, ssh, FTP/Telnet, and cloud-metadata endpoints &mdash; for every process, including your own terminal.</p>
       </section>
 
       <section class="card activity-card">

@@ -39,7 +39,7 @@ function showError(id, msg) {
 
 const ICON_LINK = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 12a2.5 2.5 0 003.6 3.4l2.5-2.5a2.5 2.5 0 10-3.5-3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 12a2.5 2.5 0 00-3.6-3.4l-2.5 2.5a2.5 2.5 0 103.5 3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-const KIND_TAG = { block: 'Blocked', toggle: 'Mode', agent: 'Gated', daemon: 'Service' };
+const KIND_TAG = { block: 'Blocked', toggle: 'Mode', agent: 'Gated', command: 'Command', daemon: 'Service' };
 
 function updateStatusPill(on) {
   const pill = $('status-pill');
@@ -73,13 +73,17 @@ function renderStats() {
   const items = state.activity || [];
   let blocks = 0;
   let gated = 0;
+  let osBlocks = 0;
   for (const e of items) {
     if (e.kind === 'block') blocks += 1;
     else if (e.kind === 'agent') gated += 1;
+    else if (e.kind === 'command' && e.outcome === 'blocked') osBlocks += 1;
+    else if (e.kind === 'daemon' && e.outcome === 'pf_applied') osBlocks += 1;
   }
   $('stat-sites').textContent = state.blocklist.length;
   $('stat-blocks').textContent = blocks;
   $('stat-gated').textContent = gated;
+  $('stat-os').textContent = osBlocks;
   $('sites-count').textContent = state.blocklist.length;
 }
 
@@ -108,7 +112,9 @@ function render() {
         ? 'Auren can\u2019t verify its own enforcement right now, so it is failing closed: nothing it gates will be allowed through until the background service recovers.'
         : (on
             ? (state.enforcement
-                ? 'Blocked sites are unreachable in every app and browser on this Mac.'
+                ? (state.terminalBlock
+                    ? 'Blocked sites are unreachable in every app and browser on this Mac. Terminal and OS-level network access (ping, ssh, \u2026) is blocked too.'
+                    : 'Blocked sites are unreachable in every app and browser on this Mac.')
                 : 'Protection is ON, but this Mac isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.')
             : 'Everything is reachable as usual. Flip the switch to start guarding.'));
 
