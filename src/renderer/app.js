@@ -22,8 +22,6 @@ function syncCountdown() {
         countdownTimer = null;
         return;
       }
-      // Update only the ticking number. Re-running render() here would rebuild
-      // the block/activity lists every 250ms and replay their entry animation.
       const el = $('cooldown-count');
       if (el) el.textContent = Math.max(1, Math.ceil((remaining - Date.now()) / 1000));
     }, 250);
@@ -43,24 +41,50 @@ const ICON_LINK = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hi
 const ICON_BLOCK = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.7"/><path d="M5.6 5.6l12.8 12.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
 const ICON_TOGGLE = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.5 8.6a6.5 6.5 0 1011 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
 const ICON_DAEMON = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 11-8 11.3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M3.5 15v-4.5H8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_GATE = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 14l5-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M13 9h2.5v2.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="14.5" cy="12" r="8" stroke="currentColor" stroke-width="1.5"/></svg>';
+
+const KIND_TAG = { block: 'Blocked', toggle: 'Mode', agent: 'Gated', daemon: 'Service' };
 
 function updateStatusPill(on) {
   const pill = $('status-pill');
   const label = $('status-label');
+  const shield = $('shield-wrap');
+  const badge = $('live-badge');
   pill.classList.remove('on', 'off', 'warn');
+  shield.classList.remove('on', 'off', 'warn');
+  badge.classList.add('hidden');
   if (state.degraded) {
     pill.classList.add('warn');
     label.textContent = 'Degraded';
+    shield.classList.add('warn');
   } else if (on && state.enforcement) {
     pill.classList.add('on');
     label.textContent = 'Protected';
+    shield.classList.add('on');
+    badge.classList.remove('hidden');
   } else if (on) {
     pill.classList.add('warn');
     label.textContent = 'Starting\u2026';
+    shield.classList.add('warn');
   } else {
     pill.classList.add('off');
     label.textContent = 'Off';
+    shield.classList.add('off');
   }
+}
+
+function renderStats() {
+  const items = state.activity || [];
+  let blocks = 0;
+  let gated = 0;
+  for (const e of items) {
+    if (e.kind === 'block') blocks += 1;
+    else if (e.kind === 'agent') gated += 1;
+  }
+  $('stat-sites').textContent = state.blocklist.length;
+  $('stat-blocks').textContent = blocks;
+  $('stat-gated').textContent = gated;
+  $('sites-count').textContent = state.blocklist.length;
 }
 
 function render() {
@@ -88,9 +112,9 @@ function render() {
         ? 'Auren can\u2019t verify its own enforcement right now, so it is failing closed: nothing it gates will be allowed through until the background service recovers.'
         : (on
             ? (state.enforcement
-                ? 'Protection is ON. Blocked sites are unreachable in every app and browser on this Mac.'
+                ? 'Blocked sites are unreachable in every app and browser on this Mac.'
                 : 'Protection is ON, but this Mac isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.')
-            : 'Protection is OFF. Everything is reachable as usual.'));
+            : 'Everything is reachable as usual. Flip the switch to start guarding.'));
 
   const list = $('block-list');
   list.textContent = '';
@@ -118,13 +142,16 @@ function render() {
     const li = document.createElement('li');
     const kind = e.kind || 'event';
     li.className = 'activity-item kind-' + kind;
+    const icon = kind === 'block' ? ICON_BLOCK : kind === 'toggle' ? ICON_TOGGLE : kind === 'agent' ? ICON_GATE : ICON_DAEMON;
     li.innerHTML =
-      (kind === 'block' ? ICON_BLOCK : kind === 'toggle' ? ICON_TOGGLE : ICON_DAEMON) +
-      '<span class="activity-text"></span>';
+      '<span class="activity-marker">' + icon + '</span>' +
+      '<span class="activity-text"></span>' +
+      '<span class="kind-tag">' + (KIND_TAG[kind] || 'Event') + '</span>';
     li.querySelector('.activity-text').textContent = e.text || e.note || e.outcome || e.domain || '';
     act.append(li);
   }
 
+  renderStats();
   syncCountdown();
 }
 
@@ -146,6 +173,7 @@ async function init() {
   $('ob-next-1').addEventListener('click', () => {
     $('ob-step-1').classList.add('hidden');
     $('ob-step-2').classList.remove('hidden');
+    document.querySelectorAll('.ob-dot').forEach((d, i) => d.classList.toggle('active', i === 1));
     $('domain-input').focus();
   });
 
