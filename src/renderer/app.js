@@ -16,11 +16,16 @@ function syncCountdown() {
   const active = cooldownUntil() > 0;
   if (active && !countdownTimer) {
     countdownTimer = setInterval(() => {
-      if (cooldownUntil() <= 0) {
+      const remaining = cooldownUntil();
+      if (remaining <= 0) {
         clearInterval(countdownTimer);
         countdownTimer = null;
+        return;
       }
-      render();
+      // Update only the ticking number. Re-running render() here would rebuild
+      // the block/activity lists every 250ms and replay their entry animation.
+      const el = $('cooldown-count');
+      if (el) el.textContent = Math.max(1, Math.ceil((remaining - Date.now()) / 1000));
     }, 250);
   } else if (!active && countdownTimer) {
     clearInterval(countdownTimer);
