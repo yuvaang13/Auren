@@ -87,6 +87,40 @@ function clearOffCooldown() {
   blockState.lock = { state: 'locked', unlockExpiry: 0 };
 }
 
+/* ---------------------------- daemon lifecycle ---------------------------- */
+
+function installDaemon() {
+  return dnsController.installDaemon({
+    nodeBin: dnsController.findNodeBin(app.getPath('exe')),
+    configPath: CONFIG_FILE,
+    activityPath: ACTIVITY_FILE,
+    statePath: STATE_FILE,
+    keyPath: KEY_FILE,
+    heartbeatPath: HEARTBEAT_FILE
+  });
+}
+
+// A launchd job from an older build (before the heartbeat + signed-config
+// contract) stays running forever and never writes heartbeats, which the
+// watchdog would read as "service down" and degrade. Detect that and re-run
+// the installer — with an OS-native admin prompt — so the running daemon
+// matches this build. At startup we only prompt unprompted when protection is
+// expected to be enforced; turning protection ON always re-verifies.
+let daemonRefreshAttempted = false;
+async function refreshDaemonIfStale() {
+  if (daemonRefreshAttempted) return true;
+  if (!dnsController.isDaemonInstalled() || dnsController.isDaemonCurrent()) return true;
+  if (blockState.mode !== 'on' && !blockState.failClosed) return true;
+  daemonRefreshAttempted = true;
+  const res = await installDaemon();
+  if (!res.ok) {
+    logActivity(activity.makeEntry('daemon', 'refresh_failed', null, 'installed background service is stale and could not be updated'));
+    return false;
+  }
+  logActivity(activity.makeEntry('daemon', 'refreshed', null, 'background service updated to match this build'));
+  return true;
+}
+
 /* ------------------------------ settings ----------------------------- */
 
 function readSettings() {
@@ -349,15 +383,8 @@ ipcMain.handle('mode:set', async (_e, mode) => {
     // Turning protection ON is instant and un-gated. It also cancels any
     // pending unlock cooldown, so protection can't flip off a moment later.
     clearOffCooldown();
-    if (!dnsController.isDaemonInstalled()) {
-      const res = await dnsController.installDaemon({
-        nodeBin: dnsController.findNodeBin(app.getPath('exe')),
-        configPath: CONFIG_FILE,
-        activityPath: ACTIVITY_FILE,
-        statePath: STATE_FILE,
-        keyPath: KEY_FILE,
-        heartbeatPath: HEARTBEAT_FILE
-      });
+    if (!dnsController.isDaemonInstalled() || !dnsController.isDaemonCurrent()) {
+      const res = await installDaemon();
       if (!res.ok) {
         logActivity(activity.makeEntry('toggle', 'on_failed', null, 'background service setup declined'));
         pushState();
@@ -423,6 +450,7 @@ if (!gotLock) {
     createWindow();
     startPolling();
     startWatchdog();
+    refreshDaemonIfStale();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });

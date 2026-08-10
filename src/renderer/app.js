@@ -68,17 +68,24 @@ function render() {
 
   $('degraded-banner').classList.toggle('hidden', !state.degraded);
 
+  const cd = $('cooldown-display');
+  cd.classList.toggle('hidden', !inCooldown);
+  if (inCooldown) {
+    const secs = Math.max(1, Math.ceil((cooldown - Date.now()) / 1000));
+    $('cooldown-count').textContent = secs;
+  }
+
   updateStatusPill(on);
 
-  $('mode-hint').textContent = state.degraded
-    ? 'Auren can\u2019t verify its own enforcement right now, so it is failing closed: nothing it gates will be allowed through until the background service recovers.'
-    : (on
-        ? (inCooldown
-            ? 'Verified. Protection stays ON for a moment \u2014 sites will unlock in ' + Math.max(1, Math.ceil((cooldown - Date.now()) / 1000)) + 's.'
-            : (state.enforcement
+  $('mode-hint').textContent = inCooldown
+    ? 'Verified. Sites stay blocked while you confirm \u2014 protection turns off in a moment.'
+    : (state.degraded
+        ? 'Auren can\u2019t verify its own enforcement right now, so it is failing closed: nothing it gates will be allowed through until the background service recovers.'
+        : (on
+            ? (state.enforcement
                 ? 'Protection is ON. Blocked sites are unreachable in every app and browser on this Mac.'
-                : 'Protection is ON, but this Mac isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.'))
-        : 'Protection is OFF. Everything is reachable as usual.');
+                : 'Protection is ON, but this Mac isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.')
+            : 'Protection is OFF. Everything is reachable as usual.'));
 
   const list = $('block-list');
   list.textContent = '';

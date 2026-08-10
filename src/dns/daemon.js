@@ -63,6 +63,10 @@ const POLL_MS = 800;
 const LOG_THROTTLE_MS = 5000;
 const HEARTBEAT_MS = 2000;
 
+// Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
+// heartbeat so the desktop app can tell a current daemon from a stale one.
+const DAEMON_VERSION = 2;
+
 let mode = 'off';
 let blocklist = [];
 let resolver = null;
@@ -108,7 +112,7 @@ function loadIntegrityKey() {
 // unprivileged app must be able to read it. It contains no secrets.
 function writeHeartbeat() {
   if (!HEARTBEAT) return;
-  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, mode, failClosed, integrityOk: !failClosed }) + '\n';
+  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, version: DAEMON_VERSION, mode, failClosed, integrityOk: !failClosed }) + '\n';
   try { fs.writeFileSync(HEARTBEAT, body, { mode: 0o644 }); } catch (err) { log('error', 'heartbeat write failed: ' + err.message); }
 }
 

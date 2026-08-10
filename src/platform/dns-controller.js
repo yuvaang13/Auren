@@ -20,8 +20,47 @@ const { execFileSync, execFile } = require('child_process');
 const PLIST = '/Library/LaunchDaemons/com.auren.guardrail.plist';
 const DAEMON_LIB = '/usr/local/lib/auren';
 
+// Bump whenever the daemon contract changes (env vars, code, behavior). The
+// app compares the installed daemon's version against this and re-runs the
+// installer when they disagree, so a running launchd job never silently keeps
+// old behavior after an app update. Keep in sync with daemon.js DAEMON_VERSION.
+const DAEMON_VERSION = 2;
+
 function isDaemonInstalled() {
   return fs.existsSync(PLIST);
+}
+
+// Reads what is actually installed (plist env + program) so the app can tell a
+// stale daemon apart from a healthy one. Returns null if the plist is missing
+// or unparseable.
+function installedDaemonInfo() {
+  if (!fs.existsSync(PLIST)) return null;
+  try {
+    const out = execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', PLIST], { encoding: 'utf8' });
+    const parsed = JSON.parse(out);
+    const env = (parsed && parsed.EnvironmentVariables) || {};
+    const args = Array.isArray(parsed && parsed.ProgramArguments) ? parsed.ProgramArguments : [];
+    return {
+      version: env.AUREN_DAEMON_VERSION || null,
+      nodeBin: args[0] || null,
+      daemonPath: args[1] || null,
+      keyPath: env.AUREN_KEY || null,
+      heartbeatPath: env.AUREN_HEARTBEAT || null
+    };
+  } catch {
+    return null;
+  }
+}
+
+// The installed daemon is current only when it carries the version this app
+// bundles AND the env vars the hardened daemon depends on (integrity key +
+// heartbeat). An old launchd job from before those existed is stale.
+function isDaemonCurrent() {
+  const info = installedDaemonInfo();
+  return !!info &&
+    info.version === String(DAEMON_VERSION) &&
+    !!info.heartbeatPath &&
+    !!info.keyPath;
 }
 
 // Whether the system is actually resolving through our local resolver.
@@ -96,6 +135,8 @@ function buildInstallerScript(opts) {
     '    <string>$SPOOL/daemon.log</string>',
     '    <key>ELECTRON_RUN_AS_NODE</key>',
     '    <string>1</string>',
+    '    <key>AUREN_DAEMON_VERSION</key>',
+    '    <string>' + DAEMON_VERSION + '</string>',
     '  </dict>',
     '  <key>RunAtLoad</key>',
     '  <true/>',
@@ -165,4 +206,4 @@ function installDaemonCli(opts) {
   return r;
 }
 
-module.exports = { PLIST, DAEMON_LIB, isDaemonInstalled, isEnforcing, findNodeBin, buildInstallerScript, installDaemon, installDaemonCli };
+module.exports = { PLIST, DAEMON_LIB, DAEMON_VERSION, isDaemonInstalled, installedDaemonInfo, isDaemonCurrent, isEnforcing, findNodeBin, buildInstallerScript, installDaemon, installDaemonCli };
