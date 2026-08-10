@@ -33,6 +33,7 @@ function load(name) {
 }
 
 const { DnsResolver, DEFAULT_UPSTREAM } = require(path.join(__dirname, 'resolver.js'));
+const { flushDnsCacheAsync } = require(path.join(__dirname, 'cache.js'));
 const { domainMatches } = load('domains.js');
 const { readConfigFile, verifyData } = load('config.js');
 const { makeEntry, appendActivity } = load('activity.js');
@@ -65,13 +66,19 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 2;
+const DAEMON_VERSION = 5;
 
 let mode = 'off';
 let blocklist = [];
 let resolver = null;
 let upstreamApplied = false;
 let state = { services: {}, applied: false };
+
+// Last-applied policy, used to detect real changes (mode switch, DNS switch,
+// block-list edit) so we only flush the OS DNS cache when it matters — not on
+// every 800 ms poll.
+let lastMode = 'off';
+let lastBlocklistJson = '[]';
 
 // Fail-closed integrity state. When true, EVERY outbound lookup is refused
 // (NXDOMAIN) and system DNS stays pointed at the local resolver, regardless of
@@ -157,7 +164,7 @@ function loadState() {
 /* --------------------------- DNS takeover --------------------------- */
 
 function applyDns() {
-  if (!DNS_ENABLED || !resolver || !resolver.running) return;
+  if (!DNS_ENABLED || !resolver || !resolver.running) return false;
   loadState();
   let changed = false;
   for (const service of listServices()) {
@@ -176,10 +183,11 @@ function applyDns() {
     logActivity(makeEntry('daemon', 'dns_applied'));
     log('info', 'DNS pointed at 127.0.0.1 (protection on)');
   }
+  return changed;
 }
 
 function restoreDns() {
-  if (!DNS_ENABLED) return;
+  if (!DNS_ENABLED) return false;
   loadState();
   let changed = false;
   for (const service of listServices()) {
@@ -202,6 +210,7 @@ function restoreDns() {
     logActivity(makeEntry('daemon', 'dns_restored'));
     log('info', 'DNS restored (protection off)');
   }
+  return changed;
 }
 
 function discoverUpstream() {
@@ -250,11 +259,36 @@ function onBlocked(name) {
   logActivity(makeEntry('block', 'blocked', name));
 }
 
+/* --------------------------- cache flushing --------------------------- */
+
+// Drop macOS's cached DNS answers so sites resolved before a protection or
+// block-list change re-resolve through this resolver instead of loading from
+// cache. Runs as root (the daemon); failures are logged but non-fatal. Uses the
+// async variant so a slow mDNSResponder restart can never stall the watchdog
+// heartbeat, which shares this process's event loop.
+function flushCache() {
+  flushDnsCacheAsync(null, (res) => {
+    if (!res.flushed) {
+      for (const e of res.errors) log('warn', 'dns cache flush failed: ' + e);
+      logActivity(makeEntry('daemon', 'cache_flush_failed'));
+    } else {
+      log('info', 'dns cache flushed');
+    }
+  });
+}
+
 /* ------------------------------ reconcile ---------------------------- */
 
 let resolverDownReported = false;
 
 async function reconcile() {
+  // Liveness first: stamp a heartbeat BEFORE any blocking work (networksetup,
+  // scutil, DNS-cache flush) so the desktop app's watchdog never reads a stale
+  // file just because a slow reconcile iteration is still running. The 2s
+  // interval keeps writing between iterations; this guarantees freshness even
+  // while one is in flight.
+  writeHeartbeat();
+
   let cfg = null;
   try {
     const raw = fs.readFileSync(CONFIG);
@@ -321,8 +355,18 @@ async function reconcile() {
 
   // Fail-closed means DNS stays pointed at us and we deny everything, even if
   // a tampered config claims mode is OFF.
-  if (mode === 'on' || failClosed) applyDns();
-  else restoreDns();
+  const dnsChanged = (mode === 'on' || failClosed) ? applyDns() : restoreDns();
+  const modeChanged = mode !== lastMode;
+  const blocklistChanged = JSON.stringify(blocklist) !== lastBlocklistJson;
+  lastMode = mode;
+  lastBlocklistJson = JSON.stringify(blocklist);
+
+  // Flush the OS DNS cache whenever the enforced policy changed (mode toggled,
+  // DNS servers switched, or a domain was added/removed while staying ON), so
+  // previously-cached sites are forced to re-resolve through this resolver.
+  if (DNS_ENABLED && (dnsChanged || modeChanged || blocklistChanged)) {
+    flushCache();
+  }
 
   writeHeartbeat();
 }
@@ -349,9 +393,15 @@ process.on('SIGINT', shutdown);
   log('info', 'daemon starting (dns-enabled=' + DNS_ENABLED + ' port=' + PORT + ')');
   loadIntegrityKey();
   logActivity(makeEntry('daemon', 'started'));
+  // Write a heartbeat immediately and keep the interval running BEFORE the
+  // first reconcile completes. The first reconcile makes blocking network
+  // calls (networksetup, dns cache flush) and can be slow; the desktop app's
+  // watchdog must not read "no heartbeat" as "daemon is dead" just because
+  // startup is still in progress.
+  writeHeartbeat();
+  setInterval(writeHeartbeat, HEARTBEAT_MS);
   await reconcile();
   setInterval(reconcile, POLL_MS);
-  setInterval(writeHeartbeat, HEARTBEAT_MS);
 })().catch((err) => {
   log('error', 'fatal: ' + (err && err.stack || err));
   process.exit(1);

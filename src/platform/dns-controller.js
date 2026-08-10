@@ -24,7 +24,7 @@ const DAEMON_LIB = '/usr/local/lib/auren';
 // app compares the installed daemon's version against this and re-runs the
 // installer when they disagree, so a running launchd job never silently keeps
 // old behavior after an app update. Keep in sync with daemon.js DAEMON_VERSION.
-const DAEMON_VERSION = 2;
+const DAEMON_VERSION = 5;
 
 function isDaemonInstalled() {
   return fs.existsSync(PLIST);
@@ -87,10 +87,10 @@ function findNodeBin(exePath) {
 }
 
 function buildInstallerScript(opts) {
-  // `srcDir` must contain all six modules flat (daemon, resolver, dns-message,
-  // domains, config, activity). The app stages them into a temp dir first so
-  // the privileged installer can read them (root can't always read files under
-  // TCC-protected folders like ~/Desktop).
+  // `srcDir` must contain all seven modules flat (daemon, resolver,
+  // dns-message, cache, domains, config, activity). The app stages them into a
+  // temp dir first so the privileged installer can read them (root can't
+  // always read files under TCC-protected folders like ~/Desktop).
   const src = opts.srcDir;
   const cfg = opts.configPath;
   const act = opts.activityPath;
@@ -105,7 +105,7 @@ function buildInstallerScript(opts) {
     'SPOOL=' + shellQuote(spool),
     'SRC=' + shellQuote(src),
     'mkdir -p "$LIB" "$SPOOL"',
-    'cp "$SRC/dns-message.js" "$SRC/resolver.js" "$SRC/daemon.js" "$SRC/domains.js" "$SRC/config.js" "$SRC/activity.js" "$LIB/"',
+    'cp "$SRC/dns-message.js" "$SRC/resolver.js" "$SRC/daemon.js" "$SRC/cache.js" "$SRC/domains.js" "$SRC/config.js" "$SRC/activity.js" "$LIB/"',
     'chmod 755 "$LIB/daemon.js"',
     'cat > ' + shellQuote(PLIST) + ' <<PLIST',
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -153,20 +153,35 @@ function buildInstallerScript(opts) {
     'PLIST',
     '/bin/launchctl bootout system/com.auren.guardrail 2>/dev/null || /bin/launchctl unload ' + shellQuote(PLIST) + ' 2>/dev/null || true',
     '/bin/launchctl bootstrap system ' + shellQuote(PLIST) + ' 2>/dev/null || /bin/launchctl load -w ' + shellQuote(PLIST),
-    // The bootstrap steps above can fail silently; only report success once
-    // launchd actually knows the service. Otherwise exit non-zero so the app
-    // shows a real setup failure instead of a false "installed".
-    'if /bin/launchctl print system/com.auren.guardrail >/dev/null 2>&1; then echo AUREN_INSTALL_OK; else echo AUREN_INSTALL_FAILED >&2; exit 1; fi'
+    // A loaded label is not a running daemon: launchd can know the service while
+    // the process fails to actually start (port 53 still busy after bootout,
+    // node crash, launchd teardown race). Only report success once the daemon is
+    // demonstrably alive — the daemon writes a fresh heartbeat every ~2 s from
+    // the moment it starts. Otherwise exit non-zero so the app shows a real
+    // setup failure instead of a false "installed".
+    'if ! /bin/launchctl print system/com.auren.guardrail >/dev/null 2>&1; then echo AUREN_INSTALL_FAILED >&2; exit 1; fi',
+    'HB=' + shellQuote(hb),
+    'i=0',
+    'while [ "$i" -lt 12 ]; do',
+    '  if [ -f "$HB" ] && [ "$(( $(/bin/date +%s) - $(/usr/bin/stat -f %m "$HB") ))" -lt 6 ]; then',
+    '    echo AUREN_INSTALL_OK',
+    '    exit 0',
+    '  fi',
+    '  /bin/sleep 1',
+    '  i=$((i + 1))',
+    'done',
+    'echo AUREN_INSTALL_FAILED >&2',
+    'exit 1'
   ].join('\n');
 }
 
-// Stages the six flat daemon modules into a temp dir readable by the
+// Stages the seven flat daemon modules into a temp dir readable by the
 // privileged installer.
 function stageDaemonFiles() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auren-stage-'));
   const dnsDir = path.join(__dirname, '..', 'dns');
   const coreDir = path.join(__dirname, '..', 'core');
-  for (const f of ['daemon.js', 'resolver.js', 'dns-message.js']) {
+  for (const f of ['daemon.js', 'resolver.js', 'dns-message.js', 'cache.js']) {
     fs.copyFileSync(path.join(dnsDir, f), path.join(dir, f));
   }
   for (const f of ['domains.js', 'config.js', 'activity.js']) {

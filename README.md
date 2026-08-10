@@ -19,6 +19,11 @@ so the site is unreachable from **every** browser and app — not just one. Ther
 is no browser extension, no per-browser setup, and nothing an app can do to
 "skip" the block by opening a different window.
 
+When you flip protection ON (or add/remove a site) Auren also flushes the
+macOS DNS cache, so sites you visited *before* the change don't keep loading
+from a previously-cached IP — the next lookup is forced through the local
+resolver.
+
 When **Protection Mode is OFF**, your DNS goes back to normal and everything is
 reachable as usual.
 
@@ -57,6 +62,14 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
   or a VPN client that forces its own DNS) never asks the local resolver, so it
   won't be blocked. By default, normal browsers and apps use the system DNS and
   *are* covered.
+- **It can't force a browser's own cache to drop instantly.** Auren flushes the
+  macOS system DNS cache on every mode/block-list change, which covers Safari
+  and anything that resolves through the OS. Browsers that keep their *own*
+  DNS and HTTP caches (Chrome, Firefox) may keep serving a site already loaded
+  or recently resolved for up to ~a minute until their internal cache expires —
+  closing the tab or restarting the browser makes the block immediate. A tab
+  that was already open when protection turned on also keeps its live
+  connection; close and reopen it.
 - **It blocks by domain name, not IP address.** Direct IP connections bypass
   DNS and are not blocked. The app rejects IP entries for exactly this reason.
 
@@ -241,6 +254,7 @@ src/
   dns/
     dns-message.js        minimal DNS wire parsing / NXDOMAIN building
     resolver.js           the local DNS server (UDP + TCP, blocks + forwards)
+    cache.js              flushes macOS DNS caches on mode/block-list changes
     daemon.js             root service: verifies config signature, fails closed,
                           writes heartbeat, reconciles DNS, runs the resolver
   platform/
@@ -338,6 +352,13 @@ Yes. Blocking `bank.com` also blocks `mail.bank.com`. But not
 VPNs sometimes force their own DNS, which can conflict with pointing DNS at
 Auren. This is a known rough edge of DNS-level blocking, not something Auren
 hides. Turn protection off (or remove the VPN) if it interferes.
+
+**I flipped protection ON but a site I was just on still loads.**
+That site was already resolved (and possibly still connected) from before
+protection turned on, so it's served from a cache rather than re-resolved.
+Auren flushes the macOS DNS cache at every mode change, which covers Safari and
+the system resolver immediately; Chrome/Firefox keep their own cache for up to
+~a minute. Close the tab (or restart the browser) and the block is instant.
 
 **Is this unbypassable?**
 No — see [What this does NOT do yet](#what-this-does-not-do-yet). It's a

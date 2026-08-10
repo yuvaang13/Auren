@@ -45,14 +45,14 @@ if [ -f "$CONFIG" ] && [ -f "$KEY" ]; then
   ' "$ROOT" "$CONFIG" "$KEY" "$TEST_DOMAIN"
   sleep 2
 
-  BLOCKED_STATUS="$(dig @127.0.0.1 "$TEST_DOMAIN" +time=3 +tries=1 2>/dev/null | grep -m1 'status:' | awk '{print $2}')"
+  BLOCKED_STATUS="$(dig @127.0.0.1 "$TEST_DOMAIN" +time=3 +tries=1 2>/dev/null | sed -n 's/.*status: \([A-Z][A-Z]*\).*/\1/p' | head -1)"
   if [ "$BLOCKED_STATUS" = "NXDOMAIN" ]; then
     pass "blocked domain returns NXDOMAIN ($TEST_DOMAIN -> NXDOMAIN)"
   else
     fail "blocked domain did not return NXDOMAIN (got: ${BLOCKED_STATUS:-none})"
   fi
 
-  ALLOWED_STATUS="$(dig @127.0.0.1 example.com +time=3 +tries=1 2>/dev/null | grep -m1 'status:' | awk '{print $2}')"
+  ALLOWED_STATUS="$(dig @127.0.0.1 example.com +time=3 +tries=1 2>/dev/null | sed -n 's/.*status: \([A-Z][A-Z]*\).*/\1/p' | head -1)"
   ALLOWED_A="$(dig @127.0.0.1 example.com +short 2>/dev/null | head -1)"
   if [ "$ALLOWED_STATUS" = "NOERROR" ] && [ -n "$ALLOWED_A" ]; then
     pass "non-blocked domain resolves via upstream (example.com -> $ALLOWED_A)"

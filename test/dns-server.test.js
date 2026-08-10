@@ -16,6 +16,7 @@ const { spawn, execFile } = require('child_process');
 
 const dnsMsg = require('../src/dns/dns-message');
 const { DnsResolver } = require('../src/dns/resolver');
+const { flushDnsCache, flushDnsCacheAsync } = require('../src/dns/cache');
 const { domainMatches } = require('../src/core/domains');
 const config = require('../src/core/config');
 
@@ -226,6 +227,60 @@ async function daemonTest() {
     assert.strictEqual(r.answers, 1);
   });
   await after();
+
+  await test('cache: flushDnsCache runs both flush commands', async () => {
+    const calls = [];
+    const res = flushDnsCache({
+      execFileSync: (cmd, args) => { calls.push({ cmd, args }); return Buffer.alloc(0); }
+    });
+    assert.deepStrictEqual(calls, [
+      { cmd: '/usr/sbin/dscacheutil', args: ['-flushcache'] },
+      { cmd: '/bin/killall', args: ['-HUP', 'mDNSResponder'] }
+    ]);
+    assert.strictEqual(res.flushed, true);
+    assert.deepStrictEqual(res.errors, []);
+  });
+
+  await test('cache: flushDnsCache swallows failures and reports them', async () => {
+    const res = flushDnsCache({
+      execFileSync: (cmd) => { throw new Error('permission denied for ' + cmd); }
+    });
+    assert.strictEqual(res.flushed, false);
+    assert.strictEqual(res.errors.length, 2);
+    assert.ok(res.errors[0].includes('dscacheutil'));
+    assert.ok(res.errors[1].includes('killall'));
+  });
+
+  await test('cache: flushDnsCacheAsync fires both commands without blocking', async () => {
+    const calls = [];
+    await new Promise((resolve) => {
+      flushDnsCacheAsync({
+        execFile: (cmd, args, opts, cb) => { calls.push({ cmd, args }); cb(null, Buffer.alloc(0)); }
+      }, (res) => {
+        assert.deepStrictEqual(res, { flushed: true, errors: [] });
+        resolve();
+      });
+    });
+    assert.deepStrictEqual(calls, [
+      { cmd: '/usr/sbin/dscacheutil', args: ['-flushcache'] },
+      { cmd: '/bin/killall', args: ['-HUP', 'mDNSResponder'] }
+    ]);
+  });
+
+  await test('cache: flushDnsCacheAsync swallows failures and reports them', async () => {
+    await new Promise((resolve) => {
+      flushDnsCacheAsync({
+        execFile: (cmd, args, opts, cb) => cb(new Error('denied ' + cmd))
+      }, (res) => {
+        assert.strictEqual(res.flushed, false);
+        assert.strictEqual(res.errors.length, 2);
+        assert.ok(res.errors[0].includes('dscacheutil'));
+        assert.ok(res.errors[1].includes('killall'));
+        resolve();
+      });
+    });
+  });
+
   await daemonTest();
   console.log('');
   console.log(passed + ' passed, ' + failed + ' failed');

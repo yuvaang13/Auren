@@ -89,6 +89,14 @@ let degraded = false;
 const WATCHDOG_MS = 3000;
 const HEARTBEAT_STALE_MS = 8000;
 
+// The daemon can be legitimately quiet while it's being installed/refreshed
+// (bootstrap, port rebind, first slow reconcile) or in the first seconds after
+// the app launches. During those windows we don't flash "degraded" — only a
+// stale heartbeat once the daemon should be settled trips the watchdog.
+const WATCHDOG_GRACE_MS = 12000;
+const STARTED_AT = Date.now();
+let daemonBusy = false;
+
 function clearOffCooldown() {
   if (offCooldownTimer) { clearTimeout(offCooldownTimer); offCooldownTimer = null; }
   offCooldownUntil = 0;
@@ -120,13 +128,18 @@ async function refreshDaemonIfStale() {
   if (!dnsController.isDaemonInstalled() || dnsController.isDaemonCurrent()) return true;
   if (blockState.mode !== 'on' && !blockState.failClosed) return true;
   daemonRefreshAttempted = true;
-  const res = await installDaemon();
-  if (!res.ok) {
-    logActivity(activity.makeEntry('daemon', 'refresh_failed', null, 'installed background service is stale and could not be updated'));
-    return false;
+  daemonBusy = true;
+  try {
+    const res = await installDaemon();
+    if (!res.ok) {
+      logActivity(activity.makeEntry('daemon', 'refresh_failed', null, 'installed background service is stale and could not be updated'));
+      return false;
+    }
+    logActivity(activity.makeEntry('daemon', 'refreshed', null, 'background service updated to match this build'));
+    return true;
+  } finally {
+    daemonBusy = false;
   }
-  logActivity(activity.makeEntry('daemon', 'refreshed', null, 'background service updated to match this build'));
-  return true;
 }
 
 /* ------------------------------ settings ----------------------------- */
@@ -281,8 +294,12 @@ function checkHeartbeat() {
   const fresh = !!hb && typeof hb.ts === 'number' && (Date.now() - hb.ts) < HEARTBEAT_STALE_MS && hb.integrityOk !== false;
   const next = expected ? !fresh : false;
   const was = degraded;
-  degraded = next;
-  if (next && !was) {
+  const inGrace = daemonBusy || (Date.now() - STARTED_AT) < WATCHDOG_GRACE_MS;
+  // During the grace window a missing heartbeat is expected (install in flight
+  // or daemon still booting) — don't enter degraded, but DO exit it if the
+  // daemon recovers. Once the window passes, a stale heartbeat degrades.
+  degraded = next ? (inGrace ? was : true) : false;
+  if (next && !was && !inGrace) {
     logActivity(activity.makeEntry('daemon', 'enforcement_degraded'));
     notifyDegraded('Auren\u2019s background service stopped responding. Protection is degraded until it recovers; nothing gated by Auren will be allowed through in the meantime.');
   } else if (!next && was) {
@@ -393,11 +410,16 @@ ipcMain.handle('mode:set', async (_e, mode) => {
     // pending unlock cooldown, so protection can't flip off a moment later.
     clearOffCooldown();
     if (!dnsController.isDaemonInstalled() || !dnsController.isDaemonCurrent()) {
-      const res = await installDaemon();
-      if (!res.ok) {
-        logActivity(activity.makeEntry('toggle', 'on_failed', null, 'background service setup declined'));
-        pushState();
-        return { ok: false, cancelled: !!res.cancelled, error: 'setup', mode: blockState.mode };
+      daemonBusy = true;
+      try {
+        const res = await installDaemon();
+        if (!res.ok) {
+          logActivity(activity.makeEntry('toggle', 'on_failed', null, 'background service setup declined'));
+          pushState();
+          return { ok: false, cancelled: !!res.cancelled, error: 'setup', mode: blockState.mode };
+        }
+      } finally {
+        daemonBusy = false;
       }
     }
     blockState.mode = 'on';
