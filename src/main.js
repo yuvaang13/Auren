@@ -29,7 +29,7 @@
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { app, BrowserWindow, ipcMain, Menu, nativeTheme, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, nativeTheme, nativeImage, Notification } = require('electron');
 
 const config = require('./core/config');
 const activity = require('./core/activity');
@@ -51,6 +51,14 @@ const HEARTBEAT_FILE = '/Library/Application Support/Auren/heartbeat.json';
 
 app.setName('auren');
 app.setPath('userData', USER_DATA);
+
+// Dev builds run the generic Electron binary, so give the Dock the auren
+// identity at runtime: custom icon + lowercase name. Packaged builds inherit
+// both from the app bundle instead.
+const ICON_PATH = path.join(__dirname, '..', 'build', 'icon.png');
+if (process.platform === 'darwin') {
+  try { app.dock.setIcon(nativeImage.createFromPath(ICON_PATH)); } catch { /* best-effort */ }
+}
 
 // Auren ships a dark UI; keep native chrome and dialogs consistent with it.
 nativeTheme.themeSource = 'dark';
@@ -297,6 +305,7 @@ function createWindow() {
     minWidth: 760,
     minHeight: 640,
     title: 'auren',
+    icon: ICON_PATH,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0a0d12',
     webPreferences: {
