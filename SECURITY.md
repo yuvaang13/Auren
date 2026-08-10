@@ -7,7 +7,11 @@ This policy covers defects that undermine the guarantees it *does* claim:
 
 - **fail-closed gating**: turning Protection OFF requires a successful
   OS-native biometric/passcode check; a failed or cancelled check leaves
-  protection ON, and the unlock itself waits out a 10-second cooldown;
+  protection ON, and the unlock itself waits out a 10-second cooldown.
+  Documented exception: a **graceful quit** (Cmd+Q / menu quit) writes a
+  signed `mode: off` config so the daemon restores DNS — this is intentional
+  cooperative behavior, equivalent to an authenticated off, and it only runs
+  on graceful quit (crash/force-quit still leaves the daemon fail-closed);
 - **fail-closed tamper detection**: config tampering, an unreadable encrypted
   store, missing signing key, or a silent daemon (missed heartbeats) must
   result in deny-all enforcement and a visible degraded state, never silent

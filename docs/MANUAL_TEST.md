@@ -41,6 +41,10 @@ Prerequisites: `npm install`, then `npm start`.
 - [ ] **Block-list edit check:** with Protection ON, add a site you were just
       visiting to the block list — it becomes unreachable within a second, no
       restart needed.
+- [ ] **Quit-lifts-protection check:** with Protection ON and a site blocked,
+      quit the app (Cmd+Q). Within ~1 second the blocked site loads again
+      (DNS restored), and the daemon log shows a `dns_restored` event. Relaunch
+      — protection starts OFF, with the block list intact.
 
 ## 4. Real system-wide check (network layer)
 

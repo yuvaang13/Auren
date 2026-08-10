@@ -20,9 +20,10 @@
  *     daemon's deny-all mode, agent:inspect-action) to refuse by default.
  *
  * DNS enforcement itself lives in the root daemon (see src/dns/daemon.js),
- * which runs independently of this process — closing Auren does not stop
- * blocking, and killing the daemon leaves system DNS pointed at a dead resolver
- * (deny-all), not open access.
+ * which runs independently of this process. On a graceful quit this process
+ * writes a signed "mode: off" config so the daemon restores system DNS and
+ * nothing stays blocked after Auren closes; killing the daemon itself leaves
+ * system DNS pointed at a dead resolver (deny-all), not open access.
  */
 
 'use strict';
@@ -282,6 +283,30 @@ function startPolling() {
   setInterval(pushState, POLL_MS);
 }
 
+/* --------------------------- graceful quit --------------------------- */
+
+// Lift protection when the app quits: write a signed "mode: off" config so the
+// root daemon restores system DNS and stops blocking within its next poll
+// (~1 s). The block list itself is preserved in the store, so a later session
+// starts with protection OFF but the same list ready to re-enable. This is
+// best-effort — a crash or force-quit skips it, and failures must never block
+// the quit, so nothing here throws out of the handler.
+function liftProtectionOnQuit() {
+  try {
+    if (offCooldownTimer) { clearTimeout(offCooldownTimer); offCooldownTimer = null; }
+    offCooldownUntil = 0;
+    if (blockState.mode === 'on' || blockState.failClosed) {
+      blockState.mode = 'off';
+      blockState.failClosed = false;
+      blockState.lock = { state: 'locked', unlockExpiry: 0 };
+      persist();
+      logActivity(activity.makeEntry('toggle', 'off', null, 'app quit — protection lifted, DNS restored'));
+    }
+  } catch (err) {
+    try { logActivity(activity.makeEntry('daemon', 'error', null, 'could not lift protection on quit: ' + err.message)); } catch { /* ignore */ }
+  }
+}
+
 /* ------------------------------ watchdog ----------------------------- */
 
 // The daemon writes a heartbeat every 2s. If we miss enough of them, or the
@@ -489,5 +514,11 @@ if (!gotLock) {
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
+  });
+
+  // Graceful quit (Cmd+Q / menu quit) lifts protection: the daemon restores
+  // system DNS and nothing stays blocked once the app is gone.
+  app.on('before-quit', () => {
+    liftProtectionOnQuit();
   });
 }

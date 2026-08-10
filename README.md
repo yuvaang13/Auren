@@ -120,17 +120,23 @@ Auren's default on any verification failure is **block, not allow**:
   the UI, a macOS notification is raised, and the event is logged with a
   timestamp. When the daemon is healthy again the app logs recovery.
 
-### 3. What happens if the whole app is killed (fail-closed where feasible)
+### 3. What happens if the whole app is killed
 
-- Closing the Auren app does **not** remove the OS-level hook. On macOS the
-  system DNS setting (pointing at `127.0.0.1`) is a SystemConfiguration
-  property; the daemon is a launchd `KeepAlive` service. If the app is killed,
-  the daemon keeps enforcing. If the daemon itself is killed, system DNS is
+- **Quitting Auren lifts protection.** On a graceful quit (Cmd+Q or the app
+  menu) Auren writes a signed `mode: off` config before exiting; the daemon
+  picks it up within ~1 s, restores your normal DNS servers, and stops
+  blocking. The block list is preserved, so the next launch starts with
+  protection OFF but the same list ready to re-enable. A crash or force-quit
+  (SIGKILL) skips this — nothing can run cleanup in that case.
+- **Killing the daemon stays fail-closed.** The OS-level hook (system DNS
+  pointing at `127.0.0.1`) is a SystemConfiguration property and the daemon is
+  a launchd `KeepAlive` service. If the daemon itself is killed, system DNS is
   **left** pointing at the local resolver — nothing answers while it's down, so
   the result is deny-all (fail-closed), not open access. launchd restarts the
   daemon, which re-verifies the config signature before resuming.
-- Turning the toggle OFF (authenticated) is the only in-app path that restores
-  normal DNS, and it's gated by the OS-native check plus the 10-second cooldown.
+- Turning the toggle OFF (authenticated) is the in-app path that restores
+  normal DNS while the app stays running; it's gated by the OS-native check
+  plus the 10-second cooldown.
 
 ### 4. Honest limits (known gaps)
 
