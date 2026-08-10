@@ -292,10 +292,10 @@ function startWatchdog() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 720,
-    height: 760,
-    minWidth: 560,
-    minHeight: 620,
+    width: 1160,
+    height: 840,
+    minWidth: 760,
+    minHeight: 640,
     title: 'auren',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0a0d12',

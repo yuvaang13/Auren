@@ -114,54 +114,56 @@
       <p class="error hidden" id="mode-error"></p>
     </section>
 
-    <section class="stats" aria-label="Dashboard summary">
-      <div class="stat-tile">
-        <span class="stat-value" id="stat-sites">0</span>
-        <span class="stat-label">Protected sites</span>
+    <div class="layout">
+      <div class="col col-stats">
+        <section class="stat-tile">
+          <span class="stat-label">Protected sites</span>
+          <span class="stat-value" id="stat-sites">0</span>
+        </section>
+        <section class="stat-tile">
+          <span class="stat-label">Attempts blocked</span>
+          <span class="stat-value" id="stat-blocks">0</span>
+        </section>
+        <section class="stat-tile">
+          <span class="stat-label">Actions gated</span>
+          <span class="stat-value" id="stat-gated">0</span>
+        </section>
       </div>
-      <div class="stat-tile">
-        <span class="stat-value" id="stat-blocks">0</span>
-        <span class="stat-label">Attempts blocked</span>
-      </div>
-      <div class="stat-tile">
-        <span class="stat-value" id="stat-gated">0</span>
-        <span class="stat-label">Actions gated</span>
-      </div>
-    </section>
 
-    <section class="card">
-      <div class="card-head">
-        <h2>Sites your agent can&rsquo;t visit</h2>
-        <span class="count-chip" id="sites-count">0</span>
-      </div>
-      <form id="add-form">
-        <div class="input-wrap">
-          <svg class="input-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/>
-            <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-          </svg>
-          <input id="domain-input" type="text" placeholder="bank.com, mail.google.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+      <section class="card sites-card">
+        <div class="card-head">
+          <h2>Sites your agent can&rsquo;t visit</h2>
+          <span class="count-chip" id="sites-count">0</span>
         </div>
-        <button class="primary" id="add-btn" type="submit">Block</button>
-      </form>
-      <p class="error hidden" id="add-error"></p>
-      <ul id="block-list" class="block-list"></ul>
-      <div class="empty hidden" id="block-empty">
-        <span>No sites blocked yet. Add one above to make it unreachable on this Mac.</span>
-      </div>
-    </section>
+        <form id="add-form">
+          <div class="input-wrap">
+            <svg class="input-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/>
+              <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+            <input id="domain-input" type="text" placeholder="bank.com, mail.google.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+          </div>
+          <button class="primary" id="add-btn" type="submit">Block</button>
+        </form>
+        <p class="error hidden" id="add-error"></p>
+        <ul id="block-list" class="block-list"></ul>
+        <div class="empty hidden" id="block-empty">
+          <span>No sites blocked yet. Add one above to make it unreachable on this Mac.</span>
+        </div>
+      </section>
 
-    <section class="card">
-      <div class="card-head">
-        <h2>Recent activity</h2>
-        <span class="privacy-chip" title="Only site names, times, and outcomes are recorded">Privacy first</span>
-      </div>
-      <ul id="activity-list" class="activity-list"></ul>
-      <div class="empty hidden" id="activity-empty">
-        <span>No activity yet &mdash; everything looks quiet.</span>
-      </div>
-      <p class="note">Only the site name, time, and outcome are recorded &mdash; never any of your data.</p>
-    </section>
+      <section class="card activity-card">
+        <div class="card-head">
+          <h2>Recent activity</h2>
+          <span class="privacy-chip" title="Only site names, times, and outcomes are recorded">Privacy first</span>
+        </div>
+        <ul id="activity-list" class="activity-list"></ul>
+        <div class="empty hidden" id="activity-empty">
+          <span>No activity yet &mdash; everything looks quiet.</span>
+        </div>
+        <p class="note">Only the site name, time, and outcome are recorded &mdash; never any of your data.</p>
+      </section>
+    </div>
 
     <footer class="footer-note">
       Auren blocks websites at the network level on this Mac. It is a cooperative guardrail, not a guarantee &mdash; the README spells out exactly what it can and can&rsquo;t do.
