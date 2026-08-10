@@ -38,10 +38,6 @@ function showError(id, msg) {
 }
 
 const ICON_LINK = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 12a2.5 2.5 0 003.6 3.4l2.5-2.5a2.5 2.5 0 10-3.5-3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 12a2.5 2.5 0 00-3.6-3.4l-2.5 2.5a2.5 2.5 0 103.5 3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-const ICON_BLOCK = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.7"/><path d="M5.6 5.6l12.8 12.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
-const ICON_TOGGLE = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.5 8.6a6.5 6.5 0 1011 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
-const ICON_DAEMON = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 11-8 11.3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M3.5 15v-4.5H8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-const ICON_GATE = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 14l5-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M13 9h2.5v2.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="14.5" cy="12" r="8" stroke="currentColor" stroke-width="1.5"/></svg>';
 
 const KIND_TAG = { block: 'Blocked', toggle: 'Mode', agent: 'Gated', daemon: 'Service' };
 
@@ -142,9 +138,8 @@ function render() {
     const li = document.createElement('li');
     const kind = e.kind || 'event';
     li.className = 'activity-item kind-' + kind;
-    const icon = kind === 'block' ? ICON_BLOCK : kind === 'toggle' ? ICON_TOGGLE : kind === 'agent' ? ICON_GATE : ICON_DAEMON;
     li.innerHTML =
-      '<span class="activity-marker">' + icon + '</span>' +
+      '<span class="activity-marker"></span>' +
       '<span class="activity-text"></span>' +
       '<span class="kind-tag">' + (KIND_TAG[kind] || 'Event') + '</span>';
     li.querySelector('.activity-text').textContent = e.text || e.note || e.outcome || e.domain || '';

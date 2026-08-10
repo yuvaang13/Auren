@@ -49,7 +49,7 @@ const KEY_FILE = path.join(USER_DATA, store.KEY_FILE);
 const STORE_FILE = path.join(USER_DATA, store.STORE_FILE);
 const HEARTBEAT_FILE = '/Library/Application Support/Auren/heartbeat.json';
 
-app.setName('Auren');
+app.setName('auren');
 app.setPath('userData', USER_DATA);
 
 // Auren ships a dark UI; keep native chrome and dialogs consistent with it.
@@ -216,7 +216,7 @@ function ensureFiles() {
     blockState = { version: 1, mode: 'on', blocklist: [], failClosed: true, lock: { state: 'locked', unlockExpiry: 0 } };
     degraded = true;
     logActivity(activity.makeEntry('daemon', 'integrity_failed', null, 'encrypted store could not be verified: ' + (loadError && loadError.message)));
-    notifyDegraded('Auren could not verify its encrypted block list and has failed closed. Nothing will be allowed through until you review it.');
+    notifyDegraded('auren could not verify its encrypted block list and has failed closed. Nothing will be allowed through until you review it.');
   }
 
   enforceStoragePermissions();
@@ -296,7 +296,7 @@ function createWindow() {
     height: 760,
     minWidth: 560,
     minHeight: 620,
-    title: 'Auren',
+    title: 'auren',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0a0d12',
     webPreferences: {
@@ -400,7 +400,7 @@ ipcMain.handle('mode:set', async (_e, mode) => {
 
   // Turning protection OFF is gated by an OS-native biometric / passcode
   // check. Only a pass/fail result ever comes back from that call.
-  const auth = await requireAuthentication('Turn off Auren protection');
+  const auth = await requireAuthentication('Turn off auren protection');
   if (!auth.ok) {
     logActivity(activity.makeEntry('toggle', auth.cancelled ? 'off_cancelled' : 'off_failed'));
     pushState();
