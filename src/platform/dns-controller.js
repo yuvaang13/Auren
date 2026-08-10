@@ -152,8 +152,11 @@ function buildInstallerScript(opts) {
     '</plist>',
     'PLIST',
     '/bin/launchctl bootout system/com.auren.guardrail 2>/dev/null || /bin/launchctl unload ' + shellQuote(PLIST) + ' 2>/dev/null || true',
-    '/bin/launchctl bootstrap system ' + shellQuote(PLIST) + ' || /bin/launchctl load -w ' + shellQuote(PLIST),
-    'echo AUREN_INSTALL_OK'
+    '/bin/launchctl bootstrap system ' + shellQuote(PLIST) + ' 2>/dev/null || /bin/launchctl load -w ' + shellQuote(PLIST),
+    // The bootstrap steps above can fail silently; only report success once
+    // launchd actually knows the service. Otherwise exit non-zero so the app
+    // shows a real setup failure instead of a false "installed".
+    'if /bin/launchctl print system/com.auren.guardrail >/dev/null 2>&1; then echo AUREN_INSTALL_OK; else echo AUREN_INSTALL_FAILED >&2; exit 1; fi'
   ].join('\n');
 }
 
