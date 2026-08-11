@@ -120,6 +120,7 @@ async function daemonTest() {
   const hbFile = path.join(dir, 'heartbeat.json');
   const actFile = path.join(dir, 'activity.jsonl');
   const stateFile = path.join(dir, 'state.json');
+  const autofillDir = path.join(dir, 'autofill');
   const port = 53000 + (process.pid % 1000);
   const key = crypto.randomBytes(32);
   fs.writeFileSync(keyFile, key, { mode: 0o600 });
@@ -141,6 +142,7 @@ async function daemonTest() {
       AUREN_DNS_ENABLED: '0',
       AUREN_PF_ENABLED: '0',
       AUREN_APPS_ENABLED: '1',
+      AUREN_AUTOFILL_DIR: autofillDir,
       AUREN_PORT: String(port)
     }),
     stdio: 'ignore'
@@ -164,6 +166,20 @@ async function daemonTest() {
       assert.strictEqual(hb.pf, false, 'pf must stay off when AUREN_PF_ENABLED=0');
     });
 
+    await test('daemon: blocks browser autofill via managed-prefs policies while protection is on', async () => {
+      writeCfg('on', ['bank.com'], false);
+      await sleep(1500);
+      for (const id of ['com.google.Chrome', 'org.chromium.Chromium', 'com.brave.Browser', 'com.microsoft.Edge']) {
+        const p = path.join(autofillDir, id + '.plist');
+        assert.ok(fs.existsSync(p), id + ' managed-prefs plist must exist');
+        const xml = fs.readFileSync(p, 'utf8');
+        assert.ok(xml.includes('<key>PasswordManagerEnabled</key>'), id + ': password manager disabled');
+        assert.ok(xml.includes('<key>AutofillAddressEnabled</key>'), id + ': address autofill disabled');
+        assert.ok(xml.includes('<key>AutofillCreditCardEnabled</key>'), id + ': card autofill disabled');
+        assert.ok(xml.includes('<false/>'), id + ': policies are false');
+      }
+    });
+
     await test('daemon: block list changes apply without restart', async () => {
       writeCfg('on', ['bank.com', 'example.net'], false);
       await sleep(1500);
@@ -178,6 +194,12 @@ async function daemonTest() {
       await sleep(1500);
       const r = await dig(port, 'bank.com');
       assert.strictEqual(r.status, 'NOERROR');
+    });
+
+    await test('daemon: removes browser autofill policies while protection is off', async () => {
+      writeCfg('off', ['bank.com'], false);
+      await sleep(1500);
+      assert.ok(!fs.existsSync(path.join(autofillDir, 'com.google.Chrome.plist')), 'plist must be removed when protection is off');
     });
 
     await test('daemon: tampered config fails closed (blocks everything)', async () => {

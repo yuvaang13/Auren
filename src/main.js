@@ -96,7 +96,7 @@ let offCooldownUntil = 0;
 let forceQuit = false;
 
 // The canonical, main-process-owned block state.
-let blockState = { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], lock: { state: 'locked', unlockExpiry: 0 } };
+let blockState = { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], autofillBlock: true, lock: { state: 'locked', unlockExpiry: 0 } };
 let storeIntegrityKey = null;
 
 // True when enforcement can't be trusted (daemon silent, tampered/corrupt
@@ -263,6 +263,12 @@ function effectiveDohBlock() {
   return readSettings().dohBlock !== false;
 }
 
+// Browser autofill blocking is tied to Protection Mode and ON by default.
+// settings.json can disable it (autofillBlock: false), like terminalBlock.
+function effectiveAutofillBlock() {
+  return readSettings().autofillBlock !== false;
+}
+
 function effectiveDohHosts() {
   const s = readSettings().dohHosts;
   if (Array.isArray(s) && s.length) {
@@ -294,6 +300,7 @@ function normalizeLoadedState(loaded) {
     terminalAllowlist: allowlist,
     dohBlock: loaded.dohBlock !== false,
     dohHosts: Array.isArray(loaded.dohHosts) ? Array.from(new Set(loaded.dohHosts.map((h) => String(h).trim()).filter(Boolean))) : [],
+    autofillBlock: loaded.autofillBlock !== false,
     lock: { state: 'locked', unlockExpiry: 0 }
   };
   if (loaded.lock && loaded.lock.unlockExpiry && loaded.lock.unlockExpiry > Date.now()) {
@@ -324,6 +331,7 @@ function persist() {
   const terminalAllowlist = effectiveTerminalAllowlist();
   const dohBlock = effectiveDohBlock();
   const dohHosts = effectiveDohHosts();
+  const autofillBlock = effectiveAutofillBlock();
   store.saveSecureStore(USER_DATA, storeIntegrityKey, {
     version: 1,
     mode: blockState.mode,
@@ -334,6 +342,7 @@ function persist() {
     terminalAllowlist,
     dohBlock,
     dohHosts,
+    autofillBlock,
     lock: blockState.lock
   });
   config.writeSignedConfig(CONFIG_FILE, {
@@ -345,7 +354,8 @@ function persist() {
     terminalBlock,
     terminalAllowlist,
     dohBlock,
-    dohHosts
+    dohHosts,
+    autofillBlock
   }, storeIntegrityKey);
 }
 
@@ -378,7 +388,7 @@ function ensureFiles() {
     // — we can't trust whatever was in there. Preserve the corrupt file for
     // inspection, then start deny-all (mode ON + failClosed).
     try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.corrupt'); } catch { /* best-effort */ }
-    blockState = { version: 1, mode: 'on', blocklist: [], appBlocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], lock: { state: 'locked', unlockExpiry: 0 } };
+    blockState = { version: 1, mode: 'on', blocklist: [], appBlocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], autofillBlock: true, lock: { state: 'locked', unlockExpiry: 0 } };
     degraded = true;
     logActivity(activity.makeEntry('daemon', 'integrity_failed', null, 'encrypted store could not be verified: ' + (loadError && loadError.message)));
     notifyDegraded('auren could not verify its encrypted block list and has failed closed. Nothing will be allowed through until you review it.');
@@ -412,6 +422,7 @@ function getState() {
     terminalBlock: effectiveTerminalBlock(),
     dohBlock: effectiveDohBlock(),
     dohHosts: effectiveDohHosts(),
+    autofillBlock: effectiveAutofillBlock(),
     vmsDetected: virt.runningVirtualization(),
     settingsTampered: settingsTampered,
     keystrokeShield: shield.keystrokeShieldActive(blockState),

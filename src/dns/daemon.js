@@ -14,12 +14,15 @@
  *      or app.
  *   4. Enforce the app block list: kill running copies of blocked apps and
  *      keep them stopped while protection is on.
+ *   5. Block browser autofill while protection is on: write managed-prefs
+ *      plists that disable Chromium-family password/address/card autofill.
  *
  * The daemon consumes the `mode`, `blocklist`, `appBlocklist`,
- * `terminalBlock`, `terminalAllowlist`, `dohBlock`, and `dohHosts` fields of
- * the config file, treats that file as untrusted input, and never touches
- * credentials or biometric data. In test mode (AUREN_DNS_ENABLED=0) it runs
- * the resolver on a configurable port and leaves system DNS alone.
+ * `terminalBlock`, `terminalAllowlist`, `dohBlock`, `dohHosts`, and
+ * `autofillBlock` fields of the config file, treats that file as untrusted
+ * input, and never touches credentials or biometric data. In test mode
+ * (AUREN_DNS_ENABLED=0) it runs the resolver on a configurable port and
+ * leaves system DNS alone.
  */
 
 'use strict';
@@ -36,6 +39,15 @@ function load(name) {
   }
 }
 
+// Platform modules live in src/platform/ in the repo and flat in the install
+// dir (staged alongside the daemon), mirroring load().
+function loadPlatform(name) {
+  try { return require(path.join(__dirname, name)); } catch (err) {
+    if (err.code !== 'MODULE_NOT_FOUND') throw err;
+    return require(path.join(__dirname, '..', 'platform', name));
+  }
+}
+
 const { DnsResolver, DEFAULT_UPSTREAM } = require(path.join(__dirname, 'resolver.js'));
 const { flushDnsCacheAsync } = require(path.join(__dirname, 'cache.js'));
 const pf = require(path.join(__dirname, 'pf.js'));
@@ -43,6 +55,7 @@ const { domainMatches } = load('domains.js');
 const { readConfigFile, verifyData } = load('config.js');
 const { makeEntry, appendActivity } = load('activity.js');
 const apps = load('apps.js');
+const autofill = loadPlatform('autofill.js');
 
 function logActivity(entry) {
   if (!ACTIVITY) return;
@@ -68,6 +81,7 @@ const PORT = parseInt(process.env.AUREN_PORT || '53', 10);
 const PF_ENABLED = String(process.env.AUREN_PF_ENABLED || '1') !== '0';
 const PF_RULES = process.env.AUREN_PF_RULES || path.join(__dirname, 'pf.rules');
 const APPS_ENABLED = String(process.env.AUREN_APPS_ENABLED || '1') !== '0';
+const AUTOFILL_ENABLED = String(process.env.AUREN_AUTOFILL_ENABLED || '1') !== '0';
 
 // Fast tick. The dominant cost per tick is the ps app-block scan (~35 ms);
 // all subprocess-heavy DNS/firewall work is deferred until the config changes
@@ -83,7 +97,7 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 12;
+const DAEMON_VERSION = 13;
 
 let mode = 'off';
 let blocklist = [];
@@ -102,6 +116,7 @@ let terminalBlock = true;
 let terminalAllowlist = { ports: [], hosts: [] };
 let dohBlock = true;
 let dohHosts = [];
+let autofillBlock = true;
 let pfActive = false;
 let lastAnchorJson = '';
 let pfFailReported = false;
@@ -432,6 +447,7 @@ async function reconcileInner() {
     terminalAllowlist = cfg.terminalAllowlist || { ports: [], hosts: [] };
     dohBlock = cfg.dohBlock !== false;
     dohHosts = Array.isArray(cfg.dohHosts) ? cfg.dohHosts : [];
+    autofillBlock = cfg.autofillBlock !== false;
   } else {
     // Fail-closed: we can't trust the config, so block everything. App
     // blocking keeps the last-verified list — the config is untrusted now,
@@ -442,6 +458,7 @@ async function reconcileInner() {
     terminalAllowlist = { ports: [], hosts: [] };
     dohBlock = true;
     dohHosts = [];
+    autofillBlock = true;
   }
 
   // Minimum-safety floor (root-enforced): while we are blocking, refuse to
@@ -603,6 +620,24 @@ async function reconcileInner() {
   // App blocking: kill running copies of blocked apps while protection is
   // expected. Deliberately last — it must never hold up DNS/pf enforcement.
   if (mode === 'on' || failClosed) enforceAppBlocks();
+
+  // Browser autofill blocking: while protection is on (and autofill blocking
+  // is enabled), force Chromium-family browsers to disable password/address/
+  // credit-card autofill via macOS managed-prefs plists. Idempotent — files
+  // are only written when the desired state changes.
+  if (AUTOFILL_ENABLED) {
+    const res = autofill.reconcileAutofill((mode === 'on' || failClosed) && autofillBlock);
+    if (res.changed) {
+      if (res.enforcing) {
+        logActivity(makeEntry('daemon', 'autofill_applied', null, res.covered.length ? res.covered.join(', ') : 'none'));
+        log('info', 'browser autofill blocked for: ' + (res.covered.length ? res.covered.join(', ') : 'none'));
+      } else {
+        logActivity(makeEntry('daemon', 'autofill_cleared', null, res.covered.length ? res.covered.join(', ') : 'none'));
+        log('info', 'browser autofill policies removed');
+      }
+      for (const e of res.errors || []) log('error', 'autofill policy failed for ' + e.browser + ': ' + e.error);
+    }
+  }
 
   writeHeartbeat();
 }

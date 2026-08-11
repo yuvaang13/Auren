@@ -26,6 +26,18 @@ This policy covers defects that undermine the guarantees it *does* claim:
   safety floor that refuses entries pointing at the daemon's own interpreter)
   and re-kills them while protection stays ON; the block list is enforced from
   the same signed, fail-closed config as DNS and the firewall;
+- **browser autofill blocking while Protection is ON** (default): the root
+  daemon writes macOS managed-preferences plists for the Chromium-family
+  browsers (Chrome, Chromium, Brave, Edge) forcing `PasswordManagerEnabled`,
+  `AutofillAddressEnabled`, `AutofillCreditCardEnabled`, and `AutoFillEnabled`
+  to `false`, so a browser session an agent controls cannot auto-fill saved
+  passwords, addresses/phone numbers, or credit cards. The plists are written
+  by the root daemon only (unprivileged processes can't delete them while
+  protection is on) and removed on protection OFF; they take effect at browser
+  launch. **Limitation (not a vulnerability of this layer):** the managed
+  policy hooks exist only for the Chromium family — Safari and Firefox are not
+  covered — and an already-running browser session retains its autofill
+  state until restarted;
 - **OS/terminal-level network blocking**: while Protection is ON the root
   daemon loads a dedicated pf anchor (`auren`) that blocks ICMP echo, outbound
   command ports (SSH/FTP/Telnet/SMB/DoT/…), cloud-metadata IPs, and the known

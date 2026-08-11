@@ -14,6 +14,7 @@ const activity = require('../src/core/activity');
 const dnsMsg = require('../src/dns/dns-message');
 const store = require('../src/core/store');
 const policy = require('../src/core/policy');
+const autofill = require('../src/platform/autofill');
 
 let passed = 0;
 let failed = 0;
@@ -141,6 +142,20 @@ test('config round-trips dohBlock and dohHosts', () => {
   const back = config.readConfig(dir);
   assert.strictEqual(back.dohBlock, false);
   assert.deepStrictEqual(back.dohHosts, ['1.1.1.1', '8.8.8.8']);
+});
+
+test('config defaults autofill blocking on', () => {
+  const cfg = config.readConfig(tmpDir());
+  assert.strictEqual(cfg.autofillBlock, true);
+});
+
+test('config round-trips autofillBlock', () => {
+  const dir = tmpDir();
+  const cfg = config.readConfig(dir);
+  cfg.autofillBlock = false;
+  config.writeConfig(dir, cfg);
+  const back = config.readConfig(dir);
+  assert.strictEqual(back.autofillBlock, false);
 });
 
 test('config round-trips the app block list, dropping malformed/duplicate entries', () => {
@@ -618,6 +633,51 @@ test('encodeName handles multi-label names', () => {
 test('encodeFrame adds a 2-byte length prefix', () => {
   const f = dnsMsg.encodeFrame(Buffer.from([1, 2, 3]));
   assert.deepStrictEqual([...f], [0, 3, 1, 2, 3]);
+});
+
+console.log('autofill');
+test('autofill plist disables password/address/credit-card autofill', () => {
+  const xml = autofill.plistXml(autofill.BLOCK_POLICIES);
+  for (const k of ['PasswordManagerEnabled', 'AutofillAddressEnabled', 'AutofillCreditCardEnabled', 'AutoFillEnabled']) {
+    assert.ok(xml.includes('<key>' + k + '</key>'), k + ' key present');
+    assert.ok(xml.includes('<' + autofill.BLOCK_POLICIES[k] + '/>'), k + ' set to false');
+  }
+  assert.ok(xml.startsWith('<?xml version="1.0"'));
+});
+
+test('autofill apply/clear writes and removes managed-prefs plists in the configured dir', () => {
+  const dir = tmpDir();
+  const prev = process.env.AUREN_AUTOFILL_DIR;
+  process.env.AUREN_AUTOFILL_DIR = dir;
+  try {
+    const res = autofill.applyAutofillBlock();
+    assert.deepStrictEqual(res.covered, autofill.BROWSERS.map((b) => b.name));
+    assert.deepStrictEqual(res.errors, []);
+    for (const b of autofill.BROWSERS) {
+      assert.ok(fs.existsSync(path.join(dir, b.id + '.plist')), b.id + ' plist exists');
+    }
+    const cleared = autofill.clearAutofillBlock();
+    assert.strictEqual(cleared.covered.length, autofill.BROWSERS.length);
+    for (const b of autofill.BROWSERS) {
+      assert.ok(!fs.existsSync(path.join(dir, b.id + '.plist')), b.id + ' plist removed');
+    }
+  } finally {
+    if (prev === undefined) delete process.env.AUREN_AUTOFILL_DIR; else process.env.AUREN_AUTOFILL_DIR = prev;
+  }
+});
+
+test('autofill reconcile only writes when the desired state changes', () => {
+  const dir = tmpDir();
+  const prev = process.env.AUREN_AUTOFILL_DIR;
+  process.env.AUREN_AUTOFILL_DIR = dir;
+  try {
+    assert.strictEqual(autofill.reconcileAutofill(true).changed, true);
+    assert.strictEqual(autofill.reconcileAutofill(true).changed, false);
+    assert.strictEqual(autofill.reconcileAutofill(false).changed, true);
+    assert.strictEqual(autofill.reconcileAutofill(false).changed, false);
+  } finally {
+    if (prev === undefined) delete process.env.AUREN_AUTOFILL_DIR; else process.env.AUREN_AUTOFILL_DIR = prev;
+  }
 });
 
 console.log('');

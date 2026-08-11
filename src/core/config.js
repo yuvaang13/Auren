@@ -9,8 +9,9 @@
  *
  * Note: the daemon reads this file while running as root. It only ever
  * consumes `mode`, `blocklist`, `appBlocklist`, `terminalBlock`,
- * `terminalAllowlist`, `dohBlock`, and `dohHosts` — no other fields — and it
- * treats the file as untrusted input (it re-validates everything it reads).
+ * `terminalAllowlist`, `dohBlock`, `dohHosts`, and `autofillBlock` — no other
+ * fields — and it treats the file as untrusted input (it re-validates
+ * everything it reads).
  */
 
 'use strict';
@@ -20,7 +21,7 @@ const crypto = require('crypto');
 const { normalizeDomain, validateBlockDomain } = require('./domains');
 const { normalizeAppBlocklist } = require('./apps');
 
-const DEFAULT_CONFIG = Object.freeze({ version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [] });
+const DEFAULT_CONFIG = Object.freeze({ version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], autofillBlock: true });
 const SIG_SUFFIX = '.sig';
 
 // Keep only the shape of the allowlist; strict IP/CIDR + port validation
@@ -65,14 +66,15 @@ function readConfigFile(file) {
       terminalBlock: parsed.terminalBlock !== false,
       terminalAllowlist: normalizeAllowlist(parsed.terminalAllowlist),
       dohBlock: parsed.dohBlock !== false,
-      dohHosts: normalizeDohHosts(parsed.dohHosts)
+      dohHosts: normalizeDohHosts(parsed.dohHosts),
+      autofillBlock: parsed.autofillBlock !== false
     };
   } catch (err) {
     if (err.code !== 'ENOENT') {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       try { fs.writeFileSync(file + '.corrupt', String(raw || '') + '\n', { flag: 'a' }); } catch {}
     }
-    return { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [] };
+    return { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], autofillBlock: true };
   }
 }
 
@@ -88,7 +90,8 @@ function writeConfigFile(file, cfg) {
     terminalBlock: cfg.terminalBlock !== false,
     terminalAllowlist: normalizeAllowlist(cfg.terminalAllowlist),
     dohBlock: cfg.dohBlock !== false,
-    dohHosts: normalizeDohHosts(cfg.dohHosts)
+    dohHosts: normalizeDohHosts(cfg.dohHosts),
+    autofillBlock: cfg.autofillBlock !== false
   }, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(tmp, file);
 }

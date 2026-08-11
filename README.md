@@ -25,6 +25,13 @@ service kills it the moment it starts — and keeps killing it — until you
 unblock it or turn protection off. Like DNS, this is system-wide: it doesn't
 matter which browser or process launched the app.
 
+When **Protection Mode is ON**, browser autofill is **blocked by default**.
+The root service writes macOS managed-policy files that make Chrome,
+Chromium, Brave, and Edge refuse to save or auto-fill passwords, addresses,
+phone numbers, and credit cards — so a browser session an agent controls can't
+be asked to fill in your saved credentials. The files are removed again the
+moment protection turns off (see [Browser autofill blocking](#browser-autofill-blocking-default-on)).
+
 When you flip protection ON (or add/remove a site) Auren also flushes the
 macOS DNS cache, so sites you visited *before* the change don't keep loading
 from a previously-cached IP — the next lookup is forced through the local
@@ -65,6 +72,14 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
   or a blocked binary that is renamed or relocated after it was added — runs
   freely. App blocking is a kill-loop with exact-path matching, not an
   application sandbox (see [App blocking](#app-blocking-blocked-apps-cant-run)).
+- **Autofill blocking is Chromium-family only and takes effect at browser
+  launch.** It covers Chrome, Chromium, Brave, and Edge via macOS managed
+  policies (passwords, addresses/phone numbers, credit cards). Safari and
+  Firefox expose no equivalent policy hook, so they're not covered; a browser
+  session already running when protection turns on keeps whatever autofill
+  data it had until it's restarted (or policies are reloaded via
+  `chrome://policy`). See
+  [Browser autofill blocking](#browser-autofill-blocking-default-on).
 - **It does not defend against a fully adversarial agent with deep system
   access.** If an agent already has root-level OS access it could reconfigure
   DNS itself, stop the background service, edit the config file, or reinstall
@@ -342,6 +357,38 @@ the list or turn protection off.
   sites (see Storage above) and the UI shows it in the **Apps** card alongside
   the sites card, with a stat tile for how many processes were killed.
 
+## Browser autofill blocking (default on)
+
+A browser session that an agent controls can ask the browser to auto-fill — and
+thereby reveal — credentials it has no business seeing: saved passwords, saved
+addresses/phone numbers, and saved credit-card numbers. Auren blocks that while
+Protection Mode is ON, **by default**, using the operating system's own managed
+policy mechanism rather than touching any browser or user setting.
+
+- **How it works:** while protection is on, the root daemon writes one small
+  property-list file per browser into `/Library/Managed Preferences/`
+  (`com.google.Chrome.plist`, `org.chromium.Chromium.plist`,
+  `com.brave.Browser.plist`, `com.microsoft.Edge.plist`). The policy keys force
+  `PasswordManagerEnabled`, `AutofillAddressEnabled`,
+  `AutofillCreditCardEnabled`, and (for older builds) `AutoFillEnabled` to
+  `false` — Chrome/Chromium/Brave/Edge read these at launch and grey out the
+  corresponding autofill options. No browser profile, saved password, or user
+  preference is modified.
+- **It's fully reversible.** The moment protection turns off (or you set
+  `autofillBlock: false` in `settings.json`), the daemon deletes the files. The
+  browser's own data was never touched.
+- **It's a next-launch guard.** Managed policies are read when a browser
+  starts, so a browser that is already open keeps whatever it had until it's
+  restarted (or you hit **Reload policies** in `chrome://policy`). Auren does
+  not terminate browsers to force this.
+- **Scope:** the four Chromium-family browsers above. Safari and Firefox don't
+  expose an equivalent policy hook for autofill, so they are outside the
+  current scope (documented under *What this does NOT do yet*).
+- **Fail-closed:** like everything else in the daemon, autofill blocking is keyed
+  on the same verified config. If the config can't be verified the daemon fails
+  closed and the policies stay in place. The files are written only by the root
+  daemon, so an unprivileged app can't silently delete them while protection is on.
+
 ## Why the biometric gate exists
 
 Turning protection **on** is instant and frictionless — a user (or an agent)
@@ -466,11 +513,13 @@ src/
     cache.js              flushes macOS DNS caches on mode/block-list changes
     pf.js                 macOS pf firewall anchor rules (block ping/ssh/DoH/...)
     daemon.js             root service: verifies config signature, fails closed,
-                          writes heartbeat, reconciles DNS + pf + apps, runs the resolver
+                          writes heartbeat, reconciles DNS + pf + apps + autofill,
+                          runs the resolver
   platform/
     biometrics.js         macOS Touch ID / passcode gate (OS-native, pass/fail)
     dns-controller.js     daemon install + enforcement-status checks
     app-resolver.js       installed-app search (LaunchServices + Info.plist)
+    autofill.js           browser autofill blocking via managed-prefs plists
 scripts/
   install-daemon.sh       install the root daemon from the CLI
   e2e-check.sh            real end-to-end verification (blocked vs. allowed)
@@ -491,7 +540,7 @@ Persistence lives in three small places:
   the signature on every poll and fails closed (deny-all) if it doesn't check
   out. The daemon treats this file as untrusted input. It carries protection
   mode, the site block list, the app block list, the terminal-block toggle,
-  and the firewall allowlist.
+  the firewall allowlist, and the autofill-block toggle.
 - `~/Library/Application Support/Auren/activity.jsonl` — the plain-language log.
 
 `/Library/LaunchDaemons/com.auren.guardrail.plist` and `/usr/local/lib/auren/`
@@ -542,9 +591,9 @@ protection off and when* — without ever logging credentials or biometrics.
 ## Running the tests
 
 ```bash
-npm run test:unit        # 63 assertions: domains, config, signing, store, policy, pf rules (incl. DoH + safety floor), activity, app blocking, keystroke shield, quit gate
+npm run test:unit        # 68 assertions: domains, config, signing, store, policy, pf rules (incl. DoH + safety floor), activity, app blocking, keystroke shield, quit gate, autofill plists
 npm run test:classifier  # 29 assertions: form-data + OS-command classifiers (incl. tunnel-on-443)
-npm run test:dns         # 16 assertions: real resolver + daemon (incl. app kills) with dig, no privileges
+npm run test:dns         # 18 assertions: real resolver + daemon (incl. app kills + autofill policies) with dig, no privileges
 npm test                 # unit + classifier
 npm run test:all         # everything
 npm run e2e:check        # REAL system-wide DNS check (daemon installed + Protection ON):
