@@ -261,7 +261,7 @@ function applyAnchor(rulesFile) {
   const steps = [
     ['-e'],
     ['-a', ANCHOR, '-F', 'all'],
-    ['-A', ANCHOR, '-f', rulesFile]
+    ['-a', ANCHOR, '-f', rulesFile]
   ];
   for (const args of steps) {
     const r = pfctl(args);
