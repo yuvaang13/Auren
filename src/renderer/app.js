@@ -3,7 +3,7 @@
 const api = window.auren;
 const $ = (id) => document.getElementById(id);
 
-let state = { mode: 'off', blocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0, degraded: false, terminalBlock: true, dohBlock: true, vmsDetected: [] };
+let state = { mode: 'off', blocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0, degraded: false, terminalBlock: true, dohBlock: true, vmsDetected: [], settingsTampered: false };
 let busy = false;
 let countdownTimer = null;
 
@@ -123,6 +123,12 @@ function render() {
   vmWarn.classList.toggle('hidden', !vmOn);
   if (vmOn) {
     vmWarn.textContent = 'Note: ' + state.vmsDetected.join(', ') + ' is running. VMs and containers use their own network stack, so Auren may not fully block traffic from inside them \u2014 see \u201cHonest limits\u201d in the README.';
+  }
+
+  const settingsWarn = $('settings-warning');
+  settingsWarn.classList.toggle('hidden', !state.settingsTampered);
+  if (state.settingsTampered) {
+    settingsWarn.textContent = 'Your settings file failed verification, so protection is running on safe defaults. Open ~/Library/Application Support/Auren/settings.json to review it, then restart auren.';
   }
 
   const list = $('block-list');

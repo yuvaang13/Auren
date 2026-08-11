@@ -90,7 +90,8 @@ dig @127.0.0.1 example.com          # -> status: NOERROR, an A record
       and is encrypted: `grep -c bank.com ~/Library/Application\ Support/Auren/guardrail.dat`
       returns `0` (the block list is not in plaintext).
 - [ ] `ls -l` on `guardrail.dat`, `auren.key`, `config.json`, and `config.sig`
-      all show `-rw-------` (0600, owner read/write only).
+      all show `-rw-------` (0600, owner read/write only). `settings.json` and
+      `settings.sig` too.
 - [ ] Loosen one file (`chmod 644 config.json`), relaunch the app, then check
       it's been tightened back to `0600` and the activity log contains a
       `permissions_fixed` line.
@@ -98,6 +99,29 @@ dig @127.0.0.1 example.com          # -> status: NOERROR, an A record
       `config.sig`). Within ~1 second the daemon fails closed: every domain,
       blocked or not, now answers NXDOMAIN, and `dig` confirms it. Restore by
       toggling the app (which rewrites a valid signature).
+- [ ] Manually edit `settings.json` (do NOT touch `settings.sig`), setting
+      `"terminalBlock": false` or `"dohBlock": false`. Relaunch the app: the
+      UI shows a settings-failure warning, the activity log contains a
+      `settings_tampered` line, the value is reset to `true`, and with
+      Protection ON the pf anchor still blocks ping / ssh (below, 5.8) — the
+      safety floor holds despite the tampered file.
+
+## 5.11 Quit gate (biometric-gated graceful quit)
+
+- [ ] With Protection ON, press Cmd+Q (or choose Quit from the app menu).
+      A Touch ID / passcode prompt appears instead of the app quitting.
+- [ ] **Cancel** the prompt. The app keeps running, protection stays ON, a
+      macOS notification appears, and the activity log contains a
+      `quit_cancelled` entry.
+- [ ] **Confirm** the prompt. The app quits, and — as with an authenticated
+      turn-off — the daemon restores normal DNS and clears the pf anchor
+      within ~1 second (`dig` resolves, `ping` works again).
+- [ ] With Protection OFF, Cmd+Q quits with **no** prompt.
+- [ ] With Protection ON, within the 10-second unlock cooldown (right after a
+      verified turn-off), Cmd+Q quits with **no** re-prompt.
+- [ ] Force-quit (Activity Monitor / `kill -9`): the app dies with no prompt
+      and protection stays ON — the daemon keeps blocking (`dig` → NXDOMAIN,
+      `ping` blocked). Nothing about a kill opens access.
 
 ## 5.6 Heartbeat / watchdog (degraded mode)
 

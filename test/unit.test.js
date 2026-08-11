@@ -394,6 +394,75 @@ test('parsePfRuleStats keeps per-rule order including zeroed rules', () => {
   assert.strictEqual(stats[3].packets, 7);
 });
 
+test('cidrContainsIp matches only the covered network', () => {
+  assert.ok(pf.cidrContainsIp('10.0.0.0/8', '10.5.6.7'));
+  assert.ok(pf.cidrContainsIp('169.254.0.0/16', '169.254.169.254'));
+  assert.ok(pf.cidrContainsIp('1.1.0.0/16', '1.1.1.1'));
+  assert.ok(!pf.cidrContainsIp('10.0.0.0/8', '11.0.0.1'));
+  assert.ok(!pf.cidrContainsIp('10.0.0.0/32', '10.0.0.1'));
+  assert.ok(!pf.cidrContainsIp('not-a-cidr', '1.1.1.1'));
+});
+
+test('safetyFloor forces terminal and DoH blocking on', () => {
+  const f = pf.safetyFloor({ terminalBlock: false, dohBlock: false });
+  assert.strictEqual(f.terminalBlock, true);
+  assert.strictEqual(f.dohBlock, true);
+  assert.ok(f.changed);
+});
+
+test('safetyFloor strips allowlisted built-in blocked ports', () => {
+  const f = pf.safetyFloor({ allowPorts: [22, 853, 8443, 443, 5900] });
+  assert.ok(!f.allowPorts.includes(22), 'SSH must stay blocked');
+  assert.ok(!f.allowPorts.includes(853), 'DoT must stay blocked');
+  assert.ok(!f.allowPorts.includes(5900), 'VNC must stay blocked');
+  assert.ok(f.allowPorts.includes(8443), 'extra ports pass through');
+  assert.ok(f.allowPorts.includes(443), '443 is not a built-in blocked port');
+});
+
+test('safetyFloor strips allowlisted metadata / DoH hosts', () => {
+  const f = pf.safetyFloor({ allowHosts: ['169.254.169.254', '1.1.1.1', '10.0.0.5', '192.168.1.0/24'] });
+  assert.ok(!f.allowHosts.includes('169.254.169.254'), 'metadata endpoint must stay blocked');
+  assert.ok(!f.allowHosts.includes('1.1.1.1'), 'DoH endpoint must stay blocked');
+  assert.ok(f.allowHosts.includes('10.0.0.5'));
+  assert.ok(f.allowHosts.includes('192.168.1.0/24'));
+});
+
+test('safetyFloor drops CIDRs that cover a metadata or DoH IP', () => {
+  assert.ok(!pf.safetyFloor({ allowHosts: ['169.254.0.0/16'] }).allowHosts.length, 'metadata-covering CIDR dropped');
+  assert.ok(!pf.safetyFloor({ allowHosts: ['1.1.0.0/16'] }).allowHosts.length, 'DoH-covering CIDR dropped');
+  assert.ok(pf.safetyFloor({ allowHosts: ['10.0.0.0/8'] }).allowHosts.includes('10.0.0.0/8'), 'unrelated CIDR passes');
+});
+
+test('safetyFloor dohHosts extends the built-in list, never replaces', () => {
+  const f = pf.safetyFloor({ dohHosts: ['9.9.9.9', '10.0.0.5'] });
+  for (const h of pf.DEFAULT_DOH_HOSTS) assert.ok(f.dohHosts.includes(h), 'built-in ' + h + ' must stay blocked');
+  assert.ok(f.dohHosts.includes('10.0.0.5'), 'user endpoint is added');
+  assert.ok(f.dohHosts.length >= pf.DEFAULT_DOH_HOSTS.length);
+});
+
+test('safetyFloor is a no-op on an already-safe config', () => {
+  const f = pf.safetyFloor({ terminalBlock: true, dohBlock: true, allowPorts: [8443], allowHosts: ['10.0.0.5'], dohHosts: pf.DEFAULT_DOH_HOSTS.slice() });
+  assert.ok(!f.changed);
+  assert.deepStrictEqual(f.allowPorts, [8443]);
+  assert.deepStrictEqual(f.allowHosts, ['10.0.0.5']);
+});
+
+console.log('quit gate');
+const { quitRequiresAuth } = require('../src/core/quit');
+
+test('quitRequiresAuth gates quit only while protection is ON', () => {
+  assert.ok(quitRequiresAuth({ mode: 'on', failClosed: false, lock: { state: 'locked', unlockExpiry: 0 } }));
+  assert.ok(quitRequiresAuth({ mode: 'off', failClosed: true, lock: { state: 'locked', unlockExpiry: 0 } }), 'fail-closed is gated even when mode reads off');
+  assert.ok(!quitRequiresAuth({ mode: 'off', failClosed: false, lock: { state: 'locked', unlockExpiry: 0 } }));
+  assert.ok(!quitRequiresAuth(null));
+  assert.ok(!quitRequiresAuth({}));
+});
+
+test('quitRequiresAuth skips the gate during a verified unlock cooldown', () => {
+  const unlocking = { mode: 'on', failClosed: false, lock: { state: 'unlocking', unlockExpiry: Date.now() + 5000 } };
+  assert.ok(!quitRequiresAuth(unlocking), 'a verified unlock in flight counts as authenticated');
+});
+
 console.log('dns-message');
 test('extractQuestion reads the query name, type, class', () => {
   const q = dnsMsg.extractQuestion(buildQuery(0x1234, 'a.b.example.com'));

@@ -139,12 +139,23 @@ Auren's default on any verification failure is **block, not allow**:
 
 ### 3. What happens if the whole app is killed
 
-- **Quitting Auren lifts protection.** On a graceful quit (Cmd+Q or the app
-  menu) Auren writes a signed `mode: off` config before exiting; the daemon
-  picks it up within ~1 s, restores your normal DNS servers, and stops
-  blocking. The block list is preserved, so the next launch starts with
-  protection OFF but the same list ready to re-enable. A crash or force-quit
-  (SIGKILL) skips this — nothing can run cleanup in that case.
+- **Quitting Auren while Protection is ON requires the same OS-native
+  biometric/passcode check as turning protection off.** Quitting would lift
+  protection, so it is gated the same way: a cancelled/failed check cancels the
+  quit and protection stays ON (the app shows a notification). This closes the
+  "just quit the app" path an agent could use to get an unauthenticated off.
+  Quitting while Protection is OFF needs no gate. A verified unlock cooldown
+  still in flight counts as already authenticated, so quitting then is allowed.
+- **After an authenticated quit, protection lifts.** Auren writes a signed
+  `mode: off` config before exiting; the daemon picks it up within ~1 s,
+  restores your normal DNS servers, and stops blocking. The block list is
+  preserved, so the next launch starts with protection OFF but the same list
+  ready to re-enable.
+- **A crash or force-quit skips the gate but also skips the lift.** SIGKILL,
+  the force-quit menu, or killing the app process never runs the quit handler,
+  so no `mode: off` is ever written — protection stays ON (deny-all) rather
+  than opening up. Only an authenticated graceful quit can hand the machine
+  back.
 - **Killing the daemon stays fail-closed.** The OS-level hook (system DNS
   pointing at `127.0.0.1`) is a SystemConfiguration property and the daemon is
   a launchd `KeepAlive` service. If the daemon itself is killed, system DNS is
@@ -164,6 +175,16 @@ Auren's default on any verification failure is **block, not allow**:
   renderer, and the fact that browser/agent scripts can't read arbitrary user
   files. A fully compromised machine (already-root or same-user read-all) is
   out of scope — see [What this does NOT do yet](#what-this-does-not-do-yet).
+- **The terminal/DoH blocks are a root-owned safety floor.** `terminalBlock`,
+  `dohBlock`, and the allowlist live in `settings.json`, and the daemon has to
+  load *something*. If `settings.json` (or the signed config) is tampered with
+  or forged to disable or allowlist-away those blocks, the daemon re-applies a
+  minimum-safety floor: terminal blocking and DoH blocking stay ON, built-in
+  blocked ports and the cloud-metadata/DoH endpoints can't be allowlisted away,
+  and `dohHosts` can only extend the built-in list. `settings.json` is also
+  HMAC-signed (`settings.sig`); a signature mismatch is logged, reset to safe
+  defaults, and surfaced in the UI. So an agent editing `settings.json` cannot
+  get an unauthenticated open — it gets the floor instead.
 - **An admin can remove the OS-level hook outside the app.** `sudo` unload of
   the launchd plist, manual DNS changes, or deleting the daemon files all happen
   outside Auren's control. Auren cannot prevent an admin user from doing this;
@@ -179,8 +200,8 @@ Auren's default on any verification failure is **block, not allow**:
   (Docker) with Protection ON to find out.
 - **DoH/DoT blocking is list-based.** The built-in list covers the major
   public DNS-over-HTTPS/TLS providers; a client pointed at a resolver that
-  isn't on the list bypasses it. Extend or replace the list with `dohHosts`
-  in `settings.json`.
+  isn't on the list bypasses it. `dohHosts` in `settings.json` can only
+  *extend* the built-in list — the built-in servers stay blocked no matter what.
 - **The degraded watchdog covers the daemon**, not the full integrity of the
   machine. If the block list is copied and the copy is served by an attacker
   that also runs the daemon process, Auren can't tell the difference.
@@ -235,8 +256,11 @@ names**, it closes the gap where direct-IP commands (`ssh user@1.2.3.4`,
   the anchor never strands the machine, and HTTPS browsing keeps working.
 - **Allowlist:** `terminalAllowlist` in `settings.json` can re-open specific
   ports and IP/CIDR hosts (pf matches IPs, so hostnames aren't supported there).
-- **DoH/DoT:** on by default (`dohBlock: true`). Replace or extend the
-  endpoint list with `dohHosts`:
+  Additive only: it can never remove the built-in blocks — command ports,
+  cloud-metadata endpoints, and known DoH/DoT endpoints stay blocked even if
+  listed (the daemon's safety floor enforces this even on a forged config).
+- **DoH/DoT:** on by default (`dohBlock: true`). EXTENDS the built-in
+  endpoint list via `dohHosts` (union — built-in servers can never be removed):
   `{ "dohBlock": true, "dohHosts": ["9.9.9.9", "149.112.112.112"] }`.
   When a process actually tries to reach a known DoH/DoT endpoint, Auren logs
   the packets it dropped.
@@ -422,7 +446,7 @@ protection off and when* — without ever logging credentials or biometrics.
 ## Running the tests
 
 ```bash
-npm run test:unit        # 45 assertions: domains, config, signing, store, policy, pf rules (incl. DoH), activity
+npm run test:unit        # 54 assertions: domains, config, signing, store, policy, pf rules (incl. DoH + safety floor), activity, quit gate
 npm run test:classifier  # 29 assertions: form-data + OS-command classifiers (incl. tunnel-on-443)
 npm run test:dns         # 14 assertions: real resolver + daemon with dig, no privileges
 npm test                 # unit + classifier

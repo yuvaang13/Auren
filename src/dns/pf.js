@@ -116,6 +116,79 @@ function dohBlockRange(opts) {
   return { start: dohStart, count: dohHosts.length };
 }
 
+// True when the CIDR covers the given IPv4 address. Used by the safety floor to
+// drop allowlist entries that would carve out a blocked IP via a range
+// (e.g. 169.254.0.0/16 over the metadata endpoints, or 1.1.1.0/24 over
+// Cloudflare DoH).
+function cidrContainsIp(cidr, ip) {
+  const m = /^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\/(\d{1,2})$/.exec(String(cidr || ''));
+  if (!m) return false;
+  const bits = Number(m[2]);
+  if (!(bits >= 1 && bits <= 32)) return false;
+  const octets = (s) => s.split('.').map(Number);
+  const net = octets(m[1]);
+  const host = octets(ip);
+  let n = 0;
+  let h = 0;
+  for (let i = 0; i < 4; i++) {
+    n = (n << 8) | net[i];
+    h = (h << 8) | host[i];
+  }
+  const mask = bits === 32 ? 0xffffffff : ((~0) << (32 - bits)) >>> 0;
+  return (n & mask) === (h & mask);
+}
+
+// Minimum-safety floor, enforced by the ROOT daemon while Protection is ON.
+//
+// The terminal/DoH tunables reach the daemon through a signed config that a
+// same-user process can forge (auren.key is user-readable), so the daemon must
+// not trust them blindly. This floor is compiled into the root-owned daemon and
+// cannot be weakened by anything the user account writes or signs:
+//   - terminalBlock / dohBlock can never be disabled while the anchor is loaded;
+//   - the allowlist is additive ONLY — any entry that carves out a built-in
+//     blocked port (BLOCKED_PORTS), a cloud-metadata endpoint, or a DoH
+//     endpoint (or a CIDR containing one) is dropped;
+//   - dohHosts EXTENDS the built-in list (union), so an override can never
+//     shrink DoH coverage.
+// Returns the sanitized inputs plus `changed` (true when anything was dropped
+// or forced). Pure and unit-testable.
+function safetyFloor(opts) {
+  const inTerminalBlock = (opts && opts.terminalBlock) !== false;
+  const inAllowPorts = normalizePorts(opts && opts.allowPorts);
+  const inAllowHosts = (Array.isArray(opts && opts.allowHosts) ? opts.allowHosts : [])
+    .map((h) => String(h).trim())
+    .filter(isValidHostEntry);
+  const inDohBlock = (opts && opts.dohBlock) !== false;
+  const inDohHosts = (Array.isArray(opts && opts.dohHosts) ? opts.dohHosts : [])
+    .map((h) => String(h).trim())
+    .filter(isValidHostEntry);
+
+  const dohUnion = Array.from(new Set(DEFAULT_DOH_HOSTS.concat(inDohHosts)));
+  const protectedHosts = BLOCKED_HOSTS.concat(dohUnion);
+
+  const outAllowPorts = inAllowPorts.filter((p) => !BLOCKED_PORTS.includes(p));
+  const outAllowHosts = inAllowHosts.filter((h) => {
+    if (protectedHosts.includes(h)) return false;
+    return !protectedHosts.some((ip) => cidrContainsIp(h, ip));
+  });
+  const outDohHosts = dohUnion;
+
+  const changed =
+    !inTerminalBlock || !inDohBlock ||
+    inAllowPorts.length !== outAllowPorts.length ||
+    inAllowHosts.length !== outAllowHosts.length ||
+    JSON.stringify(inDohHosts) !== JSON.stringify(outDohHosts);
+
+  return {
+    terminalBlock: true,
+    dohBlock: true,
+    allowPorts: outAllowPorts,
+    allowHosts: outAllowHosts,
+    dohHosts: outDohHosts,
+    changed: !!changed
+  };
+}
+
 // Pure rule generation. Returns an array of pf anchor rule lines.
 function buildAnchorRules(opts) {
   const { allowPorts, allowHosts, dohBlock, dohHosts } = ruleLayout(opts);
@@ -226,6 +299,8 @@ module.exports = {
   buildAnchorRules,
   ruleLayout,
   dohBlockRange,
+  cidrContainsIp,
+  safetyFloor,
   parsePfRuleStats,
   ruleStats,
   status,

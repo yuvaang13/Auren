@@ -41,6 +41,7 @@ const policy = require('./core/policy');
 const pf = require('./dns/pf');
 const virt = require('./core/virt');
 const { normalizeDomain, domainMatches, validateBlockDomain } = require('./core/domains');
+const { quitRequiresAuth } = require('./core/quit');
 const dnsController = require('./platform/dns-controller');
 const { requireAuthentication, requireNativeAuth } = require('./platform/biometrics');
 
@@ -48,6 +49,7 @@ const USER_DATA = path.join(os.homedir(), 'Library', 'Application Support', 'Aur
 const CONFIG_FILE = path.join(USER_DATA, 'config.json');
 const ACTIVITY_FILE = path.join(USER_DATA, 'activity.jsonl');
 const SETTINGS_FILE = path.join(USER_DATA, 'settings.json');
+const SETTINGS_SIG_FILE = SETTINGS_FILE + '.sig';
 const STATE_FILE = '/Library/Application Support/Auren/state.json';
 const KEY_FILE = path.join(USER_DATA, store.KEY_FILE);
 const STORE_FILE = path.join(USER_DATA, store.STORE_FILE);
@@ -79,6 +81,10 @@ const POLL_MS = 1000;
 const OFF_COOLDOWN_MS = 10 * 1000;
 let offCooldownTimer = null;
 let offCooldownUntil = 0;
+// Set once a graceful quit has cleared the protection gate, so the follow-up
+// app.quit() can't re-prompt. force-quit / kill paths never set this AND never
+// run liftProtectionOnQuit, so protection stays ON there.
+let forceQuit = false;
 
 // The canonical, main-process-owned block state.
 let blockState = { version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], lock: { state: 'locked', unlockExpiry: 0 } };
@@ -148,14 +154,66 @@ async function refreshDaemonIfStale() {
 
 /* ------------------------------ settings ----------------------------- */
 
+// settings.json is a user-tunable file whose security-relevant values
+// (terminalBlock, terminalAllowlist, dohBlock, dohHosts, policy overrides) are
+// baked into the signed config the root daemon trusts. It is HMAC-signed
+// (settings.sig, same integrity key as config.json) so edits made outside the
+// app are detected and dropped: on a signature mismatch every security-relevant
+// value resets to safe defaults and the UI warns. Honest limit: auren.key is
+// user-readable, so a same-user process could forge the sig — the root daemon's
+// safetyFloor is the actual enforcement boundary; this signature is detection
+// and defense-in-depth.
+let settingsTampered = false;
+let settingsTamperedReported = false;
+let settingsCache = { ts: 0, data: null };
+const SETTINGS_CACHE_MS = 1000;
+
 function readSettings() {
-  try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch { return {}; }
+  const now = Date.now();
+  if (settingsCache.data && now - settingsCache.ts < SETTINGS_CACHE_MS) return settingsCache.data;
+  let s = {};
+  try { s = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch { s = {}; }
+  if (!s || typeof s !== 'object') s = {};
+  if (storeIntegrityKey) {
+    const sig = fs.existsSync(SETTINGS_SIG_FILE) ? fs.readFileSync(SETTINGS_SIG_FILE, 'utf8') : '';
+    if (sig) {
+      if (config.verifyData(fs.readFileSync(SETTINGS_FILE, 'utf8'), storeIntegrityKey, sig)) {
+        settingsTampered = false;
+      } else {
+        // Signature present but invalid: tampered. Drop every security-relevant
+        // value and refuse to re-sign, so the mismatch (and the UI warning)
+        // persists until the app itself writes settings again.
+        settingsTampered = true;
+        if (!settingsTamperedReported) {
+          settingsTamperedReported = true;
+          logActivity(activity.makeEntry('daemon', 'settings_tampered', null, 'settings.json failed signature verification; security-relevant settings reset to defaults'));
+        }
+        s = { onboardingDone: !!s.onboardingDone };
+      }
+    } else {
+      // No signature yet: pre-existing file from an older build. One-time
+      // migration — sign the current content so future edits are verifiable.
+      writeSettingsSig();
+    }
+  }
+  settingsCache = { ts: now, data: s };
+  return s;
+}
+
+function writeSettingsSig() {
+  try {
+    fs.writeFileSync(SETTINGS_SIG_FILE, config.signData(fs.readFileSync(SETTINGS_FILE, 'utf8'), storeIntegrityKey) + '\n', { mode: 0o600 });
+    settingsTampered = false;
+    settingsTamperedReported = false;
+  } catch { /* best-effort */ }
 }
 
 function writeSettings(patch) {
   const s = Object.assign({}, readSettings(), patch);
   fs.mkdirSync(USER_DATA, { recursive: true });
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2) + '\n');
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2) + '\n', { mode: 0o600 });
+  writeSettingsSig();
+  settingsCache = { ts: Date.now(), data: s };
   return s;
 }
 
@@ -170,10 +228,12 @@ function commandPolicyFromSettings() {
 }
 
 // Terminal/OS-level blocking is tied to Protection Mode and ON by default.
-// A user can disable it (or add an allowlist) via settings.json — the same
-// tunable-policy convention as sensitivePolicy. The daemon only ever trusts
-// the signed config, so the effective values are baked into the snapshot here.
+// A user can add an allowlist via settings.json — the same tunable-policy
+// convention as sensitivePolicy. The daemon only ever trusts the signed config,
+// so the effective values are baked into the snapshot here. While settings.json
+// failed verification, every security-relevant value falls back to defaults.
 function effectiveTerminalAllowlist() {
+  if (settingsTampered) return { ports: [], hosts: [] };
   const s = readSettings().terminalAllowlist;
   if (!s || typeof s !== 'object') return blockState.terminalAllowlist;
   return {
@@ -188,7 +248,7 @@ function effectiveTerminalBlock() {
 }
 
 // DoH/DoT endpoint blocking is tied to Protection Mode and ON by default.
-// settings.json can disable it (dohBlock) or override the endpoint list
+// settings.json can disable it (dohBlock) or extend the endpoint list
 // (dohHosts); an empty list falls back to the built-in known DoH/DoT servers.
 function effectiveDohBlock() {
   return readSettings().dohBlock !== false;
@@ -238,7 +298,7 @@ function normalizeLoadedState(loaded) {
 // files that were loosened and had to be fixed.
 function enforceStoragePermissions() {
   const fixed = [];
-  for (const f of [STORE_FILE, KEY_FILE, CONFIG_FILE, CONFIG_FILE + '.sig']) {
+  for (const f of [STORE_FILE, KEY_FILE, CONFIG_FILE, CONFIG_FILE + '.sig', SETTINGS_FILE, SETTINGS_SIG_FILE]) {
     if (fs.existsSync(f) && store.ensurePermissions(f)) fixed.push(path.basename(f));
   }
   for (const name of fixed) logActivity(activity.makeEntry('daemon', 'permissions_fixed', null, name + ' permissions tightened to 0600'));
@@ -285,6 +345,11 @@ function ensureFiles() {
   storeIntegrityKey = store.loadOrCreateKey(USER_DATA);
   if (!fs.existsSync(CONFIG_FILE)) config.writeConfig(USER_DATA, config.DEFAULT_CONFIG);
   try { fs.writeFileSync(ACTIVITY_FILE, '', { flag: 'a' }); } catch {}
+
+  // Verify settings.json's signature up front so the tampered flag and its
+  // activity entry exist before the first persist() bakes effective values
+  // into the signed config.
+  readSettings();
 
   let loaded = null;
   let loadError = null;
@@ -335,6 +400,7 @@ function getState() {
     dohBlock: effectiveDohBlock(),
     dohHosts: effectiveDohHosts(),
     vmsDetected: virt.runningVirtualization(),
+    settingsTampered: settingsTampered,
     lock: blockState.lock
   };
 }
@@ -672,9 +738,31 @@ if (!gotLock) {
     if (process.platform !== 'darwin') app.quit();
   });
 
-  // Graceful quit (Cmd+Q / menu quit) lifts protection: the daemon restores
-  // system DNS and nothing stays blocked once the app is gone.
-  app.on('before-quit', () => {
-    liftProtectionOnQuit();
+  // Graceful quit (Cmd+Q / menu quit / AppleScript quit). While Protection is
+  // ON (or the app is fail-closed), quitting lifts protection, so it is gated
+  // by the same OS-native biometric/passcode check as turning protection off —
+  // an agent that simply quits the app no longer gets an unauthenticated off.
+  // A cancelled/failed check cancels the quit and protection stays ON.
+  // force-quit (kill, force-quit menu, crash) bypasses this handler but ALSO
+  // skips liftProtectionOnQuit below, so protection stays ON there too — only
+  // an authenticated graceful quit can hand the machine back.
+  app.on('before-quit', (event) => {
+    if (forceQuit || !quitRequiresAuth(blockState)) {
+      liftProtectionOnQuit();
+      return;
+    }
+    event.preventDefault();
+    requireAuthentication('Quit auren and turn protection off?').then((r) => {
+      if (r.ok) {
+        forceQuit = true;
+        app.quit();
+      } else {
+        logActivity(activity.makeEntry('toggle', 'quit_cancelled', null, 'quit blocked by protection gate'));
+        if (Notification.isSupported()) {
+          try { new Notification({ title: 'auren', body: 'Quit cancelled \u2014 protection stays ON.' }).show(); } catch { /* ignore */ }
+        }
+        pushState();
+      }
+    });
   });
 }

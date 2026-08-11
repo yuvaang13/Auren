@@ -70,7 +70,7 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 7;
+const DAEMON_VERSION = 8;
 
 let mode = 'off';
 let blocklist = [];
@@ -86,6 +86,9 @@ let dohHosts = [];
 let pfActive = false;
 let lastAnchorJson = '';
 let pfFailReported = false;
+// Dedup key for the safety-floor activity entry (see reconcile below): only
+// log when the floor actually dropped/forced something different from last time.
+let lastFloorJson = '';
 // DoH/DoT packet-counter sweep: a negative baseline means "not yet seen", so
 // the first sweep after an anchor (re)load establishes a baseline instead of
 // logging a spurious delta.
@@ -347,6 +350,29 @@ async function reconcile() {
     terminalAllowlist = { ports: [], hosts: [] };
     dohBlock = true;
     dohHosts = [];
+  }
+
+  // Minimum-safety floor (root-enforced): while we are blocking, refuse to
+  // disable terminal/DoH blocking or let the allowlist carve out the built-in
+  // blocked ports / metadata IPs / DoH endpoints — no matter what the (possibly
+  // forged) signed config claims. When protection is OFF the floor is inert.
+  if (mode === 'on' || failClosed) {
+    const floor = pf.safetyFloor({
+      terminalBlock,
+      allowPorts: terminalAllowlist.ports,
+      allowHosts: terminalAllowlist.hosts,
+      dohBlock,
+      dohHosts
+    });
+    terminalBlock = floor.terminalBlock;
+    terminalAllowlist = { ports: floor.allowPorts, hosts: floor.allowHosts };
+    dohBlock = floor.dohBlock;
+    dohHosts = floor.dohHosts;
+    const floorJson = JSON.stringify([floor.changed, floor.allowPorts, floor.allowHosts, floor.dohHosts]);
+    if (floor.changed && floorJson !== lastFloorJson) {
+      lastFloorJson = floorJson;
+      logActivity(makeEntry('daemon', 'security_floor', null, 'enforced minimum-safety floor on configured terminal/DoH settings'));
+    }
   }
 
   if (!resolver) {

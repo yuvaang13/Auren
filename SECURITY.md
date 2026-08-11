@@ -8,10 +8,12 @@ This policy covers defects that undermine the guarantees it *does* claim:
 - **fail-closed gating**: turning Protection OFF requires a successful
   OS-native biometric/passcode check; a failed or cancelled check leaves
   protection ON, and the unlock itself waits out a 10-second cooldown.
-  Documented exception: a **graceful quit** (Cmd+Q / menu quit) writes a
-  signed `mode: off` config so the daemon restores DNS — this is intentional
-  cooperative behavior, equivalent to an authenticated off, and it only runs
-  on graceful quit (crash/force-quit still leaves the daemon fail-closed);
+  Quitting the app while Protection is ON (or fail-closed) is gated the same
+  way: quitting would lift protection, so it requires the same OS-native
+  check; a failed or cancelled check cancels the quit and protection stays
+  ON. A verified unlock cooldown still in flight counts as authenticated. A
+  crash or force-quit (SIGKILL) skips the gate but also skips the `mode: off`
+  write, leaving protection ON (deny-all), never open access;
 - **fail-closed tamper detection**: config tampering, an unreadable encrypted
   store, missing signing key, or a silent daemon (missed heartbeats) must
   result in deny-all enforcement and a visible degraded state, never silent
@@ -28,7 +30,14 @@ This policy covers defects that undermine the guarantees it *does* claim:
   touch its own anchor — never the main pf ruleset, never flushing a
   pre-existing pf configuration, never disabling pf on teardown — and must load
   the blocking rules when it cannot verify the signed config (fail-closed),
-  matching the DNS deny-all posture;
+  matching the DNS deny-all posture. As a root-owned safety floor, these
+  terminal/DoH blocks cannot be disabled or allowlisted away while Protection
+  is ON: the daemon re-applies a minimum-safety floor (terminal/DoH blocking
+  ON, built-in blocked ports, cloud-metadata endpoints, and known DoH/DoT
+  endpoints stripped from any allowlist, `dohHosts` extend-only) even when
+  `settings.json` or the signed config has been tampered with or forged;
+  `settings.json` itself is HMAC-signed (`settings.sig`) — a mismatch is
+  logged, reset to safe defaults, and surfaced in the UI;
 - **the privacy invariant**: no biometric or credential data ever passes
   through Auren's process — it only consumes pass/fail results from OS APIs;
 - **accidental collection or transmission of private data** (the activity log
