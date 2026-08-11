@@ -270,6 +270,16 @@ main {
 }
 
 /* Degraded / fail-closed banner */
+.vm-warning {
+  margin: 6px 0 0;
+  padding: 9px 12px;
+  border-left: 3px solid var(--warning);
+  background: var(--warning-soft);
+  border-radius: 8px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
 .degraded-banner {
   display: flex;
   align-items: flex-start;

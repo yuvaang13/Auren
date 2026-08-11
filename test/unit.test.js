@@ -126,6 +126,23 @@ test('config round-trips terminalBlock and terminalAllowlist', () => {
   assert.deepStrictEqual(back.terminalAllowlist.hosts, ['10.0.0.5', 'fd00::1']);
 });
 
+test('config defaults DoH blocking on with an empty endpoint list', () => {
+  const cfg = config.readConfig(tmpDir());
+  assert.strictEqual(cfg.dohBlock, true);
+  assert.deepStrictEqual(cfg.dohHosts, []);
+});
+
+test('config round-trips dohBlock and dohHosts', () => {
+  const dir = tmpDir();
+  const cfg = config.readConfig(dir);
+  cfg.dohBlock = false;
+  cfg.dohHosts = ['1.1.1.1', ' 8.8.8.8 ', '1.1.1.1'];
+  config.writeConfig(dir, cfg);
+  const back = config.readConfig(dir);
+  assert.strictEqual(back.dohBlock, false);
+  assert.deepStrictEqual(back.dohHosts, ['1.1.1.1', '8.8.8.8']);
+});
+
 console.log('signed config');
 test('writeSignedConfig creates config + signature sidecar', () => {
   const dir = tmpDir();
@@ -205,9 +222,9 @@ test('policy fails closed while degraded', () => {
 });
 
 test('policy blocks network-capable commands by default', () => {
-  for (const t of ['cmd_ssh', 'cmd_ping', 'cmd_probe', 'cmd_tunnel', 'cmd_transfer', 'cmd_reverse_shell', 'cmd_remote_admin', 'cmd_exfil']) {
+  for (const t of ['cmd_ssh', 'cmd_ping', 'cmd_probe', 'cmd_tunnel', 'cmd_suspicious_443', 'cmd_transfer', 'cmd_reverse_shell', 'cmd_remote_admin', 'cmd_exfil']) {
     const d = policy.decidePolicy({ sensitive: true, types: [t] });
-    assert.strictEqual(d.action, 'block', t + ' must default to block');
+    assert.strictEqual(d.action, 'block', t + ' must block by default');
   }
 });
 
@@ -260,6 +277,12 @@ test('activity toPlainText covers command + pf outcomes', () => {
   assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'pf_failed', null, 'boom')).includes('could not be applied'));
 });
 
+test('activity toPlainText covers doh_blocked + vm outcomes', () => {
+  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'doh_blocked', null, '14 packet(s)')).includes('DoH/DoT'));
+  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'vm_detected', null, 'Docker Desktop')).includes('Virtualization detected'));
+  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'vm_cleared')).includes('No virtualization processes'));
+});
+
 console.log('pf firewall rules');
 const pf = require('../src/dns/pf');
 
@@ -307,6 +330,68 @@ test('isValidHostEntry accepts IPs and CIDRs only', () => {
   assert.ok(!pf.isValidHostEntry('example.com'));
   assert.ok(!pf.isValidHostEntry('999.1.1.1'));
   assert.ok(!pf.isValidHostEntry(''));
+});
+
+test('DoT port 853 is in the blocked command ports', () => {
+  assert.ok(pf.BLOCKED_PORTS.includes(853));
+});
+
+test('buildAnchorRules blocks known DoH/DoT endpoints before the 443 pass', () => {
+  const rules = pf.buildAnchorRules({});
+  const joined = rules.join('\n');
+  const dohIdx = rules.findIndex((r) => r === 'block out proto { tcp udp } to 1.1.1.1');
+  const pass443 = rules.indexOf('pass out proto tcp to port 443');
+  const pass53 = rules.indexOf('pass out proto { tcp udp } to port 53');
+  assert.ok(dohIdx > -1, 'a default DoH endpoint must be blocked');
+  assert.ok(pf.DEFAULT_DOH_HOSTS.every((h) => joined.includes('block out proto { tcp udp } to ' + h)), 'every default DoH endpoint gets a block rule');
+  assert.ok(dohIdx > -1 && dohIdx < pass443, 'DoH blocks must precede the generic 443 pass');
+  assert.ok(dohIdx < pass53, 'DoH blocks must precede the generic 53 pass');
+});
+
+test('buildAnchorRules dohBlock:false omits the DoH block rules', () => {
+  const rules = pf.buildAnchorRules({ dohBlock: false });
+  assert.ok(!rules.some((r) => r.startsWith('block out proto { tcp udp } to 1.1.1.1') || r.includes('8.8.8.8')));
+  assert.ok(rules.includes('pass out proto tcp to port 443'), '443 pass must remain');
+});
+
+test('allowlisted host beats a DoH block (allowlist precedes blocks)', () => {
+  const rules = pf.buildAnchorRules({ allowHosts: ['1.1.1.1'] });
+  const passIdx = rules.indexOf('pass out proto { tcp udp } to 1.1.1.1');
+  const blockIdx = rules.findIndex((r) => r.startsWith('block out proto { tcp udp } to 1.1.1.1'));
+  assert.ok(passIdx > -1, 'an allowlisted DoH IP gets a pass rule');
+  assert.ok(blockIdx === -1 || passIdx < blockIdx, 'the pass rule must win for an allowlisted host');
+});
+
+test('dohBlockRange matches the rules buildAnchorRules actually emits', () => {
+  for (const opts of [
+    {},
+    { allowPorts: [8443], allowHosts: ['10.0.0.5'] },
+    { dohHosts: ['9.9.9.9'] },
+    { dohBlock: false }
+  ]) {
+    const rules = pf.buildAnchorRules(opts);
+    const range = pf.dohBlockRange(opts);
+    if (range === null) {
+      assert.ok(!rules.some((r) => r.startsWith('block out proto { tcp udp } to 1.1.1.1')), 'no DoH rules when range is null');
+    } else {
+      const slice = rules.slice(range.start, range.start + range.count);
+      assert.ok(slice.length === range.count, 'range count matches emitted rules');
+      assert.ok(slice.every((r) => r.startsWith('block out proto { tcp udp } to ')), 'range indexes land on DoH block rules');
+    }
+  }
+});
+
+test('parsePfRuleStats keeps per-rule order including zeroed rules', () => {
+  const out = '@0 pass in on lo0 all\n  [ Evaluations: 12 Packets: 300 Bytes: 10000 ]\n\n'
+    + '@1 pass out on lo0 all\n  [ Evaluations: 0 Packets: 0 Bytes: 0 ]\n\n'
+    + '@2 block out proto { tcp udp } to 1.1.1.1\n\n'
+    + '@3 block out proto { tcp udp } to 8.8.8.8\n  [ Evaluations: 2 Packets: 7 Bytes: 420 ]';
+  const stats = pf.parsePfRuleStats(out);
+  assert.strictEqual(stats.length, 4, 'one entry per rule, in order');
+  assert.strictEqual(stats[0].packets, 300);
+  assert.strictEqual(stats[1].packets, 0);
+  assert.strictEqual(stats[2].packets, 0, 'a rule with no counter line still occupies its slot');
+  assert.strictEqual(stats[3].packets, 7);
 });
 
 console.log('dns-message');

@@ -15,6 +15,9 @@
  *   'cmd_ping'         ping / traceroute / mtr (ICMP egress probes)
  *   'cmd_probe'        nc / telnet / nmap / socat port probing
  *   'cmd_tunnel'       ssh -L/-R/-D, autossh, socat relays
+ *   'cmd_suspicious_443' ssh -p 443 / stunnel / openssl s_client / nc or socat
+ *                      pointed at a remote port 443 (a non-HTTPS protocol
+ *                      masquerading on the HTTPS port — the classic tunnel)
  *   'cmd_transfer'     curl / wget / aria2c / ftp / rclone / s3 upload+download
  *   'cmd_reverse_shell' classic reverse-shell patterns (nc -e, /dev/tcp, ...)
  *   'cmd_remote_admin' remote database / cluster admin (mysql, redis-cli, ...)
@@ -43,7 +46,7 @@ const EXFIL_PATH_RE = /(?:\.ssh|\.aws|\.config[/\\]gh|\.gnupg|\.netrc|\.env\b|cr
 // Classic reverse-shell / remote-connection-in-shell patterns, matched against
 // each raw segment.
 const REVERSE_SHELL_RES = [
-  /nc\s+(?:-[a-z0-9]*e\b|--exec)/,                       // nc -e /bin/sh
+  /(?:^|[;&|]\s*|\s)(?:nc|ncat|netcat)\s+(?:-[a-z0-9]*e\b|--exec)/, // nc -e /bin/sh
   /bash\s+-i\s+[<>]&?\s*\/dev\/tcp\//,                    // bash -i >& /dev/tcp/host/port
   /sh\s+-i\s+[<>]&\s*\/dev\/tcp\//,                       // sh -i <& /dev/tcp/...
   /mkfifo\b.*\bnc\b|\bnc\b.*\bmkfifo\b/,                  // mkfifo /tmp/f; cat | nc ...
@@ -155,6 +158,16 @@ function classifySegment(segment) {
   if (TRANSFER_CMDS.has(cmd) || isTransferSubcommand(argv)) types.add('cmd_transfer');
   if (REMOTE_ADMIN_CMDS.has(cmd) && isRemoteAdmin(argv)) types.add('cmd_remote_admin');
 
+  // A network tool pointed at a REMOTE port 443 with a non-HTTPS protocol is
+  // the classic "tunnel on the HTTPS port" bypass. HTTPS (curl/wget to
+  // https://...) is normal and intentionally NOT flagged — detection focuses
+  // on tools that would carry arbitrary bytes over 443.
+  if (cmd === 'stunnel' || cmd === 'sslh' || cmd === 'corkscrew') types.add('cmd_suspicious_443');
+  if (cmd === 'openssl' && argv.includes('s_client') && argv.some((a) => a.includes(':443'))) {
+    types.add('cmd_suspicious_443');
+  }
+  if ((SSH_CMDS.has(cmd) || PROBE_CMDS.has(cmd)) && targetsPort443(argv)) types.add('cmd_suspicious_443');
+
   // ssh tunnels are a distinct (worse) thing than a plain ssh session.
   for (const a of argv) {
     if (SSH_CMDS.has(cmd) && /^-[A-Za-z0-9]+$/.test(a) && !a.startsWith('-o') && /[LDR]/.test(a)) {
@@ -169,6 +182,26 @@ function classifySegment(segment) {
   }
 
   return types;
+}
+
+// True if this argv explicitly targets a REMOTE port 443 (not a listener, not
+// an https:// URL). Detects: `-p 443` / `-P 443` / `-p443` / `--port=443` /
+// `-o Port=443`, `host:443` (except http(s)://), and a bare positional `443`
+// after a host token (e.g. `nc host 443`).
+function targetsPort443(argv) {
+  // Inbound/listening forms are not an egress tunnel.
+  if (argv.some((a) => a === '-l' || a === '--listen' || /^(?:TCP|UDP|SSL)-LISTEN:/.test(a))) return false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if ((a === '-p' || a === '-P' || a === '--port') && String(argv[i + 1] || '') === '443') return true;
+    if (/^-[pP]=?443$/.test(a)) return true;
+    if (/(?:^|\s)-[pP]\s+443(?:\s|$)/.test(a)) return true;
+    if (a === '--port=443') return true;
+    if (/^Port=443$/i.test(a)) return true;
+    if (a.includes(':443') && !/^https?:\/\//.test(a) && !/LISTEN/.test(a)) return true;
+    if (a === '443' && i > 0 && /^[\w.:-]+$/.test(argv[i - 1]) && !argv[i - 1].startsWith('-')) return true;
+  }
+  return false;
 }
 
 // Returns { sensitive: boolean, types: string[] }.
@@ -196,6 +229,7 @@ module.exports = {
   classifyCommand,
   tokenizeSegment,
   baseCommand,
+  targetsPort443,
   SSH_CMDS,
   PING_CMDS,
   PROBE_CMDS,

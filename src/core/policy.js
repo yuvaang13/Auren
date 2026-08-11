@@ -32,6 +32,7 @@ const DEFAULT_RULES = Object.freeze({
   cmd_ping: 'block',
   cmd_probe: 'block',
   cmd_tunnel: 'block',
+  cmd_suspicious_443: 'block',
   cmd_transfer: 'block',
   cmd_reverse_shell: 'block',
   cmd_remote_admin: 'block',

@@ -33,13 +33,27 @@ const PFCTL = '/sbin/pfctl';
 // Command-tool ports we block outbound by default while Protection is ON.
 // 21 ftp, 22 ssh/scp/sftp, 23 telnet, 25 smtp, 110 pop3, 135/137/138/139 netbios,
 // 143 imap, 445 smb, 465 smtps, 587 submission, 993 imaps, 995 pop3s,
-// 1080 socks proxy, 3389 rdp, 5900 vnc.
-const BLOCKED_PORTS = [21, 22, 23, 25, 110, 135, 137, 138, 139, 143, 445, 465, 587, 993, 995, 1080, 3389, 5900];
+// 853 dot (DNS-over-TLS), 1080 socks proxy, 3389 rdp, 5900 vnc.
+const BLOCKED_PORTS = [21, 22, 23, 25, 110, 135, 137, 138, 139, 143, 445, 465, 587, 853, 993, 995, 1080, 3389, 5900];
 
 // Cloud-instance metadata endpoints. Never reachable via DNS (they are IPs),
 // so this is the only place we can block them. Reaching them is how an agent
 // steals instance credentials.
 const BLOCKED_HOSTS = ['169.254.169.254', '169.254.169.253', '100.100.100.200'];
+
+// Known public DNS-over-HTTPS / DNS-over-TLS endpoints (IPv4 + common IPv6),
+// blocked at the IP layer. DoH/DoT always bypasses the local resolver (Auren),
+// so blocking the well-known servers closes the most common bypass path. This
+// is a best-effort blocklist — a complete catalog of every DoH/DoT server on
+// the internet is not possible (see README "Honest limits"). Operators can
+// override it via settings.json (dohEndpoints) or config.json (dohHosts).
+const DEFAULT_DOH_HOSTS = [
+  '1.1.1.1', '1.0.0.1', '2606:4700:4700::1111', '2606:4700:4700::1001', // Cloudflare
+  '8.8.8.8', '8.8.4.4', '2001:4860:4860::8888', '2001:4860:4860::8844', // Google
+  '9.9.9.9', '149.112.112.112', '2620:fe::fe', '2620:fe::9', // Quad9
+  '45.90.28.190', '45.90.30.190', // NextDNS
+  '94.140.14.14', '94.140.15.15', '2a10:50c0::ad1:ff', '2a10:50c0::ad2:ff' // AdGuard
+];
 
 const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
 const IPV4_CIDR_RE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
@@ -67,23 +81,55 @@ function normalizePorts(ports) {
   return out.sort((a, b) => a - b);
 }
 
-// Pure rule generation. Returns an array of pf anchor rule lines.
-function buildAnchorRules(opts) {
+// Header comment lines precede the real rules in buildAnchorRules' output.
+// Keep them in sync with the builder below — they shift every rule index.
+const HEADER_COMMENTS = [
+  '# Auren OS-level terminal/network guard (auto-generated).',
+  '# Allow rules precede block rules (pf evaluates first-match wins).'
+];
+
+// Resolve the allow/DoH inputs exactly as buildAnchorRules will lay them out,
+// and report where the DoH block rules land in the final rule array. Pure.
+// The daemon uses dohBlockRange() to watch pf packet counters for those rules,
+// so it must never drift from what buildAnchorRules() actually emitted.
+function ruleLayout(opts) {
   const allowPorts = normalizePorts(opts && opts.allowPorts);
   const allowHosts = (Array.isArray(opts && opts.allowHosts) ? opts.allowHosts : [])
     .map((h) => String(h).trim())
     .filter(isValidHostEntry);
-  const rules = [
-    '# Auren OS-level terminal/network guard (auto-generated).',
-    '# Allow rules precede block rules (pf evaluates first-match wins).',
-    'pass in  on lo0 all',
-    'pass out on lo0 all',
-    'pass out proto { tcp udp } to port 53',
-    'pass out proto tcp to port 80',
-    'pass out proto tcp to port 443'
-  ];
+  const dohBlock = (opts && opts.dohBlock) !== false;
+  let dohHosts = (Array.isArray(opts && opts.dohHosts) ? opts.dohHosts : [])
+    .map((h) => String(h).trim())
+    .filter(isValidHostEntry);
+  if (dohBlock && dohHosts.length === 0) dohHosts = DEFAULT_DOH_HOSTS.slice();
+  // Header comments, then the two lo0 passes, then allowlisted ports, then
+  // allowlisted hosts, then the DoH block rules.
+  const dohStart = HEADER_COMMENTS.length + 2 + allowPorts.length + allowHosts.length;
+  return { allowPorts, allowHosts, dohBlock, dohHosts, dohStart };
+}
+
+// Index range (into buildAnchorRules' output) of the DoH block rules, or null
+// when DoH blocking is disabled. Uses the same layout logic as the builder.
+function dohBlockRange(opts) {
+  const { dohBlock, dohHosts, dohStart } = ruleLayout(opts);
+  if (!dohBlock || dohHosts.length === 0) return null;
+  return { start: dohStart, count: dohHosts.length };
+}
+
+// Pure rule generation. Returns an array of pf anchor rule lines.
+function buildAnchorRules(opts) {
+  const { allowPorts, allowHosts, dohBlock, dohHosts } = ruleLayout(opts);
+  const rules = HEADER_COMMENTS.slice();
+  rules.push('pass in  on lo0 all');
+  rules.push('pass out on lo0 all');
   for (const p of allowPorts) rules.push('pass out proto { tcp udp } to port ' + p);
   for (const h of allowHosts) rules.push('pass out proto { tcp udp } to ' + h);
+  if (dohBlock) {
+    for (const h of dohHosts) rules.push('block out proto { tcp udp } to ' + h);
+  }
+  rules.push('pass out proto { tcp udp } to port 53');
+  rules.push('pass out proto tcp to port 80');
+  rules.push('pass out proto tcp to port 443');
   rules.push('block out proto icmp');
   rules.push('block out proto icmp6');
   if (BLOCKED_PORTS.length) rules.push('block out proto { tcp udp } to port { ' + BLOCKED_PORTS.join(' ') + ' }');
@@ -91,8 +137,36 @@ function buildAnchorRules(opts) {
   return rules;
 }
 
+// Parse `pfctl -a auren -vsr` output into per-rule packet counters, in rule
+// order (one entry per rule block, INCLUDING zeroed rules, so array indices
+// align with rule indices — the daemon maps DoH rules by index). Format on
+// macOS:
+//   @0 pass in on lo0 all
+//     [ Evaluations: 12 Packets: 300 Bytes: 10000 ]
+function parsePfRuleStats(text) {
+  const stats = [];
+  const blocks = String(text || '').split(/\n\s*\n/);
+  for (const block of blocks) {
+    if (!block.trim()) continue;
+    const m = block.match(/\[\s*Evaluations:\s*(\d+)\s+Packets:\s*(\d+)\s+Bytes:\s*(\d+)\s*\]/);
+    if (m) {
+      stats.push({ evaluations: Number(m[1]), packets: Number(m[2]), bytes: Number(m[3]) });
+    } else if (/^(?:@\d+\s+)?(?:pass|block|rdr|match|no|anchor|nat)\b/.test(block.trim())) {
+      stats.push({ evaluations: 0, packets: 0, bytes: 0 });
+    }
+  }
+  return stats;
+}
+
 function pfctl(args) {
   return spawnSync(PFCTL, args, { encoding: 'utf8' });
+}
+
+// Per-rule counters for the auren anchor (see parsePfRuleStats).
+function ruleStats() {
+  const r = pfctl(['-a', ANCHOR, '-vsr']);
+  if (r.status !== 0) return { ok: false, error: (r.stderr || r.stdout || '').trim() || 'pfctl -vsr failed' };
+  return { ok: true, stats: parsePfRuleStats(r.stdout || '') };
 }
 
 // Returns { enabled: boolean } — whether pf itself is running at all.
@@ -146,9 +220,14 @@ module.exports = {
   ANCHOR,
   BLOCKED_PORTS,
   BLOCKED_HOSTS,
+  DEFAULT_DOH_HOSTS,
   isValidHostEntry,
   normalizePorts,
   buildAnchorRules,
+  ruleLayout,
+  dohBlockRange,
+  parsePfRuleStats,
+  ruleStats,
   status,
   applyAnchor,
   clearAnchor,

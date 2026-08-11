@@ -38,6 +38,8 @@ const store = require('./core/store');
 const sensitive = require('./core/sensitive');
 const commands = require('./core/commands');
 const policy = require('./core/policy');
+const pf = require('./dns/pf');
+const virt = require('./core/virt');
 const { normalizeDomain, domainMatches, validateBlockDomain } = require('./core/domains');
 const dnsController = require('./platform/dns-controller');
 const { requireAuthentication, requireNativeAuth } = require('./platform/biometrics');
@@ -79,7 +81,7 @@ let offCooldownTimer = null;
 let offCooldownUntil = 0;
 
 // The canonical, main-process-owned block state.
-let blockState = { version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, lock: { state: 'locked', unlockExpiry: 0 } };
+let blockState = { version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], lock: { state: 'locked', unlockExpiry: 0 } };
 let storeIntegrityKey = null;
 
 // True when enforcement can't be trusted (daemon silent, tampered/corrupt
@@ -185,6 +187,21 @@ function effectiveTerminalBlock() {
   return s.terminalBlock !== false;
 }
 
+// DoH/DoT endpoint blocking is tied to Protection Mode and ON by default.
+// settings.json can disable it (dohBlock) or override the endpoint list
+// (dohHosts); an empty list falls back to the built-in known DoH/DoT servers.
+function effectiveDohBlock() {
+  return readSettings().dohBlock !== false;
+}
+
+function effectiveDohHosts() {
+  const s = readSettings().dohHosts;
+  if (Array.isArray(s) && s.length) {
+    return Array.from(new Set(s.map((h) => String(h).trim()).filter(Boolean)));
+  }
+  return pf.DEFAULT_DOH_HOSTS.slice();
+}
+
 function logActivity(entry) {
   activity.appendActivity(ACTIVITY_FILE, entry);
 }
@@ -205,6 +222,8 @@ function normalizeLoadedState(loaded) {
     failClosed: loaded.failClosed === true,
     terminalBlock: loaded.terminalBlock !== false,
     terminalAllowlist: allowlist,
+    dohBlock: loaded.dohBlock !== false,
+    dohHosts: Array.isArray(loaded.dohHosts) ? Array.from(new Set(loaded.dohHosts.map((h) => String(h).trim()).filter(Boolean))) : [],
     lock: { state: 'locked', unlockExpiry: 0 }
   };
   if (loaded.lock && loaded.lock.unlockExpiry && loaded.lock.unlockExpiry > Date.now()) {
@@ -227,11 +246,14 @@ function enforceStoragePermissions() {
 
 // Persist canonical state: encrypted store (authoritative) + signed plaintext
 // snapshot (consumed by the root daemon, verified on every read). Terminal/OS
-// blocking defaults ON; settings.json may disable it or add an allowlist, and
-// the effective value is what the daemon sees.
+// blocking and DoH/DoT endpoint blocking default ON; settings.json may disable
+// them or add an allowlist / override endpoints, and the effective values are
+// what the daemon sees.
 function persist() {
   const terminalBlock = effectiveTerminalBlock();
   const terminalAllowlist = effectiveTerminalAllowlist();
+  const dohBlock = effectiveDohBlock();
+  const dohHosts = effectiveDohHosts();
   store.saveSecureStore(USER_DATA, storeIntegrityKey, {
     version: 1,
     mode: blockState.mode,
@@ -239,6 +261,8 @@ function persist() {
     failClosed: blockState.failClosed,
     terminalBlock,
     terminalAllowlist,
+    dohBlock,
+    dohHosts,
     lock: blockState.lock
   });
   config.writeSignedConfig(CONFIG_FILE, {
@@ -247,7 +271,9 @@ function persist() {
     blocklist: blockState.blocklist,
     failClosed: blockState.failClosed,
     terminalBlock,
-    terminalAllowlist
+    terminalAllowlist,
+    dohBlock,
+    dohHosts
   }, storeIntegrityKey);
 }
 
@@ -275,7 +301,7 @@ function ensureFiles() {
     // — we can't trust whatever was in there. Preserve the corrupt file for
     // inspection, then start deny-all (mode ON + failClosed).
     try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.corrupt'); } catch { /* best-effort */ }
-    blockState = { version: 1, mode: 'on', blocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, lock: { state: 'locked', unlockExpiry: 0 } };
+    blockState = { version: 1, mode: 'on', blocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], lock: { state: 'locked', unlockExpiry: 0 } };
     degraded = true;
     logActivity(activity.makeEntry('daemon', 'integrity_failed', null, 'encrypted store could not be verified: ' + (loadError && loadError.message)));
     notifyDegraded('auren could not verify its encrypted block list and has failed closed. Nothing will be allowed through until you review it.');
@@ -306,11 +332,32 @@ function getState() {
     onboardingDone: !!(readSettings().onboardingDone),
     degraded: degraded || blockState.failClosed,
     terminalBlock: effectiveTerminalBlock(),
+    dohBlock: effectiveDohBlock(),
+    dohHosts: effectiveDohHosts(),
+    vmsDetected: virt.runningVirtualization(),
     lock: blockState.lock
   };
 }
 
+// Log VM/container detections while Protection is ON (only on state changes,
+// so the log doesn't fill with repeats). The detection itself is polled inside
+// getState (virt.js caches it for 10 s), so this just compares snapshots.
+let lastVmsJson = null;
+function checkVirtualization() {
+  const vms = virt.runningVirtualization();
+  const json = JSON.stringify(vms);
+  if (json === lastVmsJson) return;
+  lastVmsJson = json;
+  if (blockState.mode !== 'on') return;
+  if (vms.length > 0) {
+    logActivity(activity.makeEntry('daemon', 'vm_detected', null, vms.join(', ')));
+  } else {
+    logActivity(activity.makeEntry('daemon', 'vm_cleared', null));
+  }
+}
+
 function pushState() {
+  checkVirtualization();
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const s = getState();
   const key = JSON.stringify(s);

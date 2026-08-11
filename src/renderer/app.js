@@ -3,7 +3,7 @@
 const api = window.auren;
 const $ = (id) => document.getElementById(id);
 
-let state = { mode: 'off', blocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0, degraded: false };
+let state = { mode: 'off', blocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0, degraded: false, terminalBlock: true, dohBlock: true, vmsDetected: [] };
 let busy = false;
 let countdownTimer = null;
 
@@ -113,10 +113,17 @@ function render() {
         : (on
             ? (state.enforcement
                 ? (state.terminalBlock
-                    ? 'Blocked sites are unreachable in every app and browser on this Mac. Terminal and OS-level network access (ping, ssh, \u2026) is blocked too.'
+                    ? 'Blocked sites are unreachable in every app and browser on this Mac. Terminal and OS-level network access (ping, ssh, \u2026) is blocked too.' + (state.dohBlock ? ' Known DoH/DoT endpoints are blocked as well.' : '')
                     : 'Blocked sites are unreachable in every app and browser on this Mac.')
                 : 'Protection is ON, but this Mac isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.')
             : 'Everything is reachable as usual. Flip the switch to start guarding.'));
+
+  const vmOn = on && Array.isArray(state.vmsDetected) && state.vmsDetected.length > 0;
+  const vmWarn = $('vm-warning');
+  vmWarn.classList.toggle('hidden', !vmOn);
+  if (vmOn) {
+    vmWarn.textContent = 'Note: ' + state.vmsDetected.join(', ') + ' is running. VMs and containers use their own network stack, so Auren may not fully block traffic from inside them \u2014 see \u201cHonest limits\u201d in the README.';
+  }
 
   const list = $('block-list');
   list.textContent = '';

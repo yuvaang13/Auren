@@ -8,7 +8,8 @@
  * half-written file.
  *
  * Note: the daemon reads this file while running as root. It only ever
- * consumes `mode` and `blocklist` — no other fields — and it treats the file
+ * consumes `mode`, `blocklist`, `terminalBlock`, `terminalAllowlist`,
+ * `dohBlock`, and `dohHosts` — no other fields — and it treats the file
  * as untrusted input (it re-validates everything it reads).
  */
 
@@ -18,7 +19,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { normalizeDomain, validateBlockDomain } = require('./domains');
 
-const DEFAULT_CONFIG = Object.freeze({ version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] } });
+const DEFAULT_CONFIG = Object.freeze({ version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [] });
 const SIG_SUFFIX = '.sig';
 
 // Keep only the shape of the allowlist; strict IP/CIDR + port validation
@@ -32,6 +33,13 @@ function normalizeAllowlist(raw) {
     ? raw.hosts.map((h) => String(h).trim()).filter(Boolean)
     : [];
   return { ports: Array.from(new Set(ports)).sort((a, b) => a - b), hosts: Array.from(new Set(hosts)) };
+}
+
+// Keep only the shape of the DoH endpoint list; strict IP validation happens
+// in the daemon's pf rule builder (src/dns/pf.js) before these become pf
+// rules. Empty array means "use the built-in default list".
+function normalizeDohHosts(raw) {
+  return Array.isArray(raw) ? Array.from(new Set(raw.map((h) => String(h).trim()).filter(Boolean))) : [];
 }
 
 function configFile(userDataDir) {
@@ -53,14 +61,16 @@ function readConfigFile(file) {
       blocklist,
       failClosed: parsed.failClosed === true,
       terminalBlock: parsed.terminalBlock !== false,
-      terminalAllowlist: normalizeAllowlist(parsed.terminalAllowlist)
+      terminalAllowlist: normalizeAllowlist(parsed.terminalAllowlist),
+      dohBlock: parsed.dohBlock !== false,
+      dohHosts: normalizeDohHosts(parsed.dohHosts)
     };
   } catch (err) {
     if (err.code !== 'ENOENT') {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       try { fs.writeFileSync(file + '.corrupt', String(raw || '') + '\n', { flag: 'a' }); } catch {}
     }
-    return { version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] } };
+    return { version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [] };
   }
 }
 
@@ -73,7 +83,9 @@ function writeConfigFile(file, cfg) {
     blocklist: cfg.blocklist,
     failClosed: cfg.failClosed === true,
     terminalBlock: cfg.terminalBlock !== false,
-    terminalAllowlist: normalizeAllowlist(cfg.terminalAllowlist)
+    terminalAllowlist: normalizeAllowlist(cfg.terminalAllowlist),
+    dohBlock: cfg.dohBlock !== false,
+    dohHosts: normalizeDohHosts(cfg.dohHosts)
   }, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
@@ -131,4 +143,4 @@ function removeDomain(userDataDir, input) {
   return { ok: true, blocklist: cfg.blocklist };
 }
 
-module.exports = { DEFAULT_CONFIG, SIG_SUFFIX, configFile, readConfigFile, writeConfigFile, readConfig, writeConfig, setMode, addDomain, removeDomain, signData, verifyData, writeSignedConfig };
+module.exports = { DEFAULT_CONFIG, SIG_SUFFIX, configFile, readConfigFile, writeConfigFile, readConfig, writeConfig, setMode, addDomain, removeDomain, signData, verifyData, writeSignedConfig, normalizeDohHosts };

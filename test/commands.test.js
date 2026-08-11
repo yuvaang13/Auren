@@ -83,6 +83,32 @@ test('flags remote database / cluster admin', () => {
   assert.ok(has('mongosh mongodb://admin:admin@mongodb.example.com:27017', 'cmd_remote_admin'));
 });
 
+console.log('command classifier — tunnel-on-443 (cmd_suspicious_443)');
+test('flags ssh/scp/sftp pointed at remote port 443', () => {
+  assert.ok(has('ssh -p 443 root@example.com', 'cmd_suspicious_443'));
+  assert.ok(has('scp -P 443 file user@host:', 'cmd_suspicious_443'));
+  assert.ok(has('ssh -o Port=443 user@example.com', 'cmd_suspicious_443'));
+  assert.ok(has('rsync -e "ssh -p 443" file user@host:', 'cmd_suspicious_443'));
+});
+test('flags stunnel and raw openssl s_client to :443', () => {
+  assert.ok(has('stunnel /etc/stunnel/client.conf', 'cmd_suspicious_443'));
+  assert.ok(has('openssl s_client -connect 10.0.0.9:443', 'cmd_suspicious_443'));
+});
+test('flags raw nc / socat / nmap to a remote 443', () => {
+  assert.ok(has('nc 8.8.8.8 443', 'cmd_suspicious_443'));
+  assert.ok(has('ncat --ssl target.example 443', 'cmd_suspicious_443'));
+  assert.ok(has('socat TCP:10.0.0.9:443', 'cmd_suspicious_443'));
+  assert.ok(has('nmap -p 443 scanme.example', 'cmd_suspicious_443'));
+});
+test('does NOT flag normal HTTPS, non-443 ssh, or listeners', () => {
+  assert.ok(!has('curl https://example.com/', 'cmd_suspicious_443'));
+  assert.ok(!has('curl https://example.com:443/api', 'cmd_suspicious_443'));
+  assert.ok(!has('wget http://example.com:443/', 'cmd_suspicious_443'));
+  assert.ok(!has('ssh -p 4430 user@example.com', 'cmd_suspicious_443'));
+  assert.ok(!has('nc -l 443', 'cmd_suspicious_443'));
+  assert.ok(!has('ssh user@example.com', 'cmd_suspicious_443'));
+});
+
 console.log('command classifier — benign commands');
 test('local development commands are not flagged', () => {
   assert.ok(!isSensitive('ls -la'));

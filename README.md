@@ -56,12 +56,15 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
   the daemon. That is a known, documented limitation — Auren's protection is
   exactly as strong as the assumption that the machine isn't already
   compromised.
-- **It can't intercept apps that bypass the system resolver.** An app or
-  browser configured to use DNS-over-HTTPS/TLS with its own hardcoded resolver
-  (for example, a browser with "Secure DNS" pointed at a specific DoH server,
-  or a VPN client that forces its own DNS) never asks the local resolver, so it
-  won't be blocked. By default, normal browsers and apps use the system DNS and
-  *are* covered.
+- **DoH/DoT blocking is a blocklist, not a wall.** Auren now blocks the
+  well-known public DNS-over-HTTPS/TLS endpoints (Cloudflare, Google, Quad9,
+  NextDNS, AdGuard, …) at the OS firewall, so the common "Secure DNS bypass"
+  fails. But that's a list of known servers, not every resolver on the
+  internet: a client pointed at an obscure or self-hosted DoH server that
+  isn't on the list still bypasses DNS blocking. Extend or replace the list
+  with `dohHosts` in `settings.json`. Auren also can't read TLS SNI at the
+  firewall, so it can't tell *which* HTTPS host an arbitrary 443 connection
+  targets — see the terminal section below for what it does about that.
 - **It can't force a browser's own cache to drop instantly.** Auren flushes the
   macOS system DNS cache on every mode/block-list change, which covers Safari
   and anything that resolves through the OS. Browsers that keep their *own*
@@ -73,10 +76,14 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
 - **It blocks by domain name, not IP address.** Direct IP connections bypass
   DNS and are not blocked. The app rejects IP entries for exactly this reason.
 - **A terminal command that only uses HTTPS is indistinguishable from a
-  browser.** The OS-level firewall (below) blocks ICMP ping, SSH/FTP/Telnet and
-  other command ports, and cloud-metadata IPs — but `curl`/`wget` to an
-  arbitrary HTTPS host uses the same port 443 as normal browsing, so a port
-  rule can't stop it without breaking the web.
+  browser — at the packet layer.** The OS firewall blocks ICMP ping,
+  SSH/FTP/Telnet/DoT and other command ports, cloud-metadata IPs, and known
+  DoH endpoints — but `curl`/`wget` to an arbitrary HTTPS host uses the same
+  port 443 as normal browsing, so a port rule can't stop it without breaking
+  the web. The command gate closes part of that gap: it flags non-HTTPS
+  protocols explicitly aimed at port 443 (`ssh -p 443`, `stunnel`,
+  `openssl s_client`, raw `nc`/`socat` to `:443`) and blocks them by default.
+  What it can't do is see raw bytes inside a legitimate HTTPS connection.
 - **It does not stop local code execution that makes no network calls.** The
   firewall and the command gate only cover network-capable commands. An agent
   running `rm -rf`, `osascript`, or compiling and running a binary locally is
@@ -162,8 +169,18 @@ Auren's default on any verification failure is **block, not allow**:
   outside Auren's control. Auren cannot prevent an admin user from doing this;
   it can only detect and report. (The activity log and the degraded banner are
   the honest response.)
-- **Docker containers and NAT'd guests** bypass the host's DNS setting unless
-  explicitly configured to use it.
+- **VMs and containers have their own network stack.** Docker Desktop,
+  Parallels, VMware Fusion, UTM, and VirtualBox each NAT (or bridge) their own
+  traffic, which may never transit the host's `auren` pf anchor — so Auren's
+  DNS and port blocking may not cover traffic from inside a guest. While
+  Protection is ON, Auren detects when one of these runtimes is running and
+  says so in the UI and the activity log. Whether your container traffic is
+  actually covered is an empirical question: run `npm run audit:container`
+  (Docker) with Protection ON to find out.
+- **DoH/DoT blocking is list-based.** The built-in list covers the major
+  public DNS-over-HTTPS/TLS providers; a client pointed at a resolver that
+  isn't on the list bypasses it. Extend or replace the list with `dohHosts`
+  in `settings.json`.
 - **The degraded watchdog covers the daemon**, not the full integrity of the
   machine. If the block list is copied and the copy is served by an attacker
   that also runs the daemon process, Auren can't tell the difference.
@@ -208,14 +225,21 @@ names**, it closes the gap where direct-IP commands (`ssh user@1.2.3.4`,
 - **Blocked by default:** ICMP echo and traceroute (`ping`, `mtr`);
   outbound to command-tool ports — 21 FTP, 22 SSH/SCP/SFTP, 23 Telnet,
   25 SMTP, 110/143/993/995 mail, 135/137/138/139/445 NetBIOS/SMB,
-  465/587 submission, 1080 SOCKS, 3389 RDP, 5900 VNC; and the cloud-metadata
-  endpoints `169.254.169.254`, `169.254.169.253`, `100.100.100.200` (how an
-  agent steals instance credentials — these are IPs, so only a firewall can
-  see them).
+  465/587 submission, 853 DoT, 1080 SOCKS, 3389 RDP, 5900 VNC; the
+  cloud-metadata endpoints `169.254.169.254`, `169.254.169.253`,
+  `100.100.100.200` (how an agent steals instance credentials — these are
+  IPs, so only a firewall can see them); and the known public DoH/DoT
+  endpoint IPs (Cloudflare, Google, Quad9, NextDNS, AdGuard, …), which
+  Auren logs when something actually tries to reach them.
 - **Always allowed:** loopback, DNS (port 53), and browsing (ports 80/443) —
   the anchor never strands the machine, and HTTPS browsing keeps working.
 - **Allowlist:** `terminalAllowlist` in `settings.json` can re-open specific
   ports and IP/CIDR hosts (pf matches IPs, so hostnames aren't supported there).
+- **DoH/DoT:** on by default (`dohBlock: true`). Replace or extend the
+  endpoint list with `dohHosts`:
+  `{ "dohBlock": true, "dohHosts": ["9.9.9.9", "149.112.112.112"] }`.
+  When a process actually tries to reach a known DoH/DoT endpoint, Auren logs
+  the packets it dropped.
 - **System-wide while ON:** pf rules apply to every process — including your
   own terminal. `ssh`/`ping` from your terminal are blocked too until
   Protection is turned OFF, which clears the anchor. That's the locked state,
@@ -233,7 +257,9 @@ names**, it closes the gap where direct-IP commands (`ssh user@1.2.3.4`,
 commands through Auren calls it before executing them. The classifier
 (`src/core/commands.js`) recognizes ssh/scp/sftp/rsync sessions, ping and
 traceroute, port probes (`nc`, `telnet`, `nmap`), ssh tunnels (`-L/-R/-D`),
-file transfers (`curl`, `wget`, `aws s3`, `gsutil`), classic reverse-shell
+tunnel-on-443 attempts (`ssh -p 443`, `stunnel`, `openssl s_client`, raw
+`nc`/`socat` to `:443` — blocked as `cmd_suspicious_443`), file
+transfers (`curl`, `wget`, `aws s3`, `gsutil`), classic reverse-shell
 patterns (`nc -e`, `bash -i >& /dev/tcp/`, `python -c socket`, …), remote
 database/cluster admin, and credential-store exfiltration pipelines
 (`cat ~/.aws/credentials | nc …`). **Default policy: block.** Tuning lives in
@@ -321,14 +347,15 @@ src/
     config.js             config.json read/write (atomic) + HMAC signing, shared
     store.js              encrypted at-rest store (AES-256-GCM) for block state
     sensitive.js          outgoing form-data classifier (PII / credentials)
-    commands.js           OS/terminal command classifier (ssh, ping, exfil, ...)
+    commands.js           OS/terminal command classifier (ssh, ping, 443 tunnels, exfil, ...)
     policy.js             decision layer over classifier signals (block / auth-gate)
     activity.js           plain-language activity log (JSONL)
+    virt.js               VM/container-runtime detection (Docker, Parallels, UTM, ...)
   dns/
     dns-message.js        minimal DNS wire parsing / NXDOMAIN building
     resolver.js           the local DNS server (UDP + TCP, blocks + forwards)
     cache.js              flushes macOS DNS caches on mode/block-list changes
-    pf.js                 macOS pf firewall anchor rules (block ping/ssh/...)
+    pf.js                 macOS pf firewall anchor rules (block ping/ssh/DoH/...)
     daemon.js             root service: verifies config signature, fails closed,
                           writes heartbeat, reconciles DNS + pf, runs the resolver
   platform/
@@ -395,16 +422,20 @@ protection off and when* — without ever logging credentials or biometrics.
 ## Running the tests
 
 ```bash
-npm run test:unit        # 36 assertions: domains, config, signing, store, policy, pf rules, activity
-npm run test:classifier  # 25 assertions: form-data + OS-command classifiers
+npm run test:unit        # 45 assertions: domains, config, signing, store, policy, pf rules (incl. DoH), activity
+npm run test:classifier  # 29 assertions: form-data + OS-command classifiers (incl. tunnel-on-443)
 npm run test:dns         # 14 assertions: real resolver + daemon with dig, no privileges
 npm test                 # unit + classifier
 npm run test:all         # everything
 npm run e2e:check        # REAL system-wide DNS check (daemon installed + Protection ON):
                          #   blocked domain -> NXDOMAIN, normal domain -> resolves
 sudo npm run e2e:pf          # REAL OS-firewall check (Protection ON, as root):
-                             #   pf anchor loaded, ping blocked, ssh port blocked, HTTPS ok
+                             #   pf anchor loaded (incl. DoH rules), ping blocked,
+                             #   ssh/DoT blocked, DoH endpoint unreachable, HTTPS still ok
                              #   (or: sudo bash scripts/e2e-pf-check.sh, from the repo root)
+npm run audit:container      # Docker isolation audit (Protection ON): does container
+                             #   traffic bypass Auren's firewall? Reports DNS, port 22,
+                             #   and HTTPS reachability from inside a container
 ```
 
 `e2e:check` temporarily adds `auren-e2e-check.test` to the block list, verifies

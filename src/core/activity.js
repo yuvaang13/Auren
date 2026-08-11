@@ -25,7 +25,8 @@ const path = require('path');
 //          'dns_restored' | 'pf_applied' | 'pf_cleared' | 'pf_failed' |
 //          'enforcement_degraded' | 'enforcement_restored' |
 //          'recovery_attempted' | 'recovered' | 'recovery_failed' |
-//          'integrity_failed' | 'permissions_fixed'
+//          'integrity_failed' | 'permissions_fixed' | 'doh_blocked' |
+//          'vm_detected' | 'vm_cleared'
 function makeEntry(kind, outcome, domain, note) {
   return { ts: new Date().toISOString(), kind, outcome, domain: domain || null, note: note || null };
 }
@@ -86,6 +87,9 @@ function toPlainText(entry) {
       if (entry.outcome === 'recovery_failed') return `Background service could not be restored automatically${entry.note ? ': ' + entry.note : ''} \u00b7 ${time}`;
       if (entry.outcome === 'integrity_failed') return `INTEGRITY FAILURE \u2014 block list could not be verified; Auren failed closed \u00b7 ${time}`;
       if (entry.outcome === 'permissions_fixed') return `Storage permissions tightened to owner-only \u00b7 ${time}`;
+      if (entry.outcome === 'doh_blocked') return `Known DoH/DoT endpoint blocked (${entry.note || 'attempt'}) \u00b7 ${time}`;
+      if (entry.outcome === 'vm_detected') return `Virtualization detected (${entry.note || 'see note'}) \u2014 protection may not fully cover VM/container traffic \u00b7 ${time}`;
+      if (entry.outcome === 'vm_cleared') return `No virtualization processes detected \u2014 protection scope is the host's own traffic \u00b7 ${time}`;
       if (entry.outcome === 'error') return `Auren background service error${entry.note ? ': ' + entry.note : ''} \u00b7 ${time}`;
       return `Auren background service ${entry.outcome} \u00b7 ${time}`;
     default:

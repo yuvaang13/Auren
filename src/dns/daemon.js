@@ -12,7 +12,8 @@
  *   3. Read the shared config file (mode + block list) and apply it in real
  *      time — no restart needed when the user adds or removes a blocked site.
  *
- * The daemon consumes only the `mode` and `blocklist` fields of the config
+ * The daemon consumes the `mode`, `blocklist`, `terminalBlock`,
+ * `terminalAllowlist`, `dohBlock`, and `dohHosts` fields of the config
  * file, treats that file as untrusted input, and never touches credentials or
  * biometric data. In test mode (AUREN_DNS_ENABLED=0) it runs the resolver on
  * a configurable port and leaves system DNS alone.
@@ -69,7 +70,7 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 6;
+const DAEMON_VERSION = 7;
 
 let mode = 'off';
 let blocklist = [];
@@ -80,9 +81,16 @@ let state = { services: {}, applied: false };
 // OS/terminal-level network blocking (pf anchor), tied to Protection Mode.
 let terminalBlock = true;
 let terminalAllowlist = { ports: [], hosts: [] };
+let dohBlock = true;
+let dohHosts = [];
 let pfActive = false;
 let lastAnchorJson = '';
 let pfFailReported = false;
+// DoH/DoT packet-counter sweep: a negative baseline means "not yet seen", so
+// the first sweep after an anchor (re)load establishes a baseline instead of
+// logging a spurious delta.
+let lastDohPackets = -1;
+let lastDohSweep = 0;
 
 // Last-applied policy, used to detect real changes (mode switch, DNS switch,
 // block-list edit) so we only flush the OS DNS cache when it matters — not on
@@ -329,12 +337,16 @@ async function reconcile() {
     blocklist = cfg.blocklist;
     terminalBlock = cfg.terminalBlock !== false;
     terminalAllowlist = cfg.terminalAllowlist || { ports: [], hosts: [] };
+    dohBlock = cfg.dohBlock !== false;
+    dohHosts = Array.isArray(cfg.dohHosts) ? cfg.dohHosts : [];
   } else {
     // Fail-closed: we can't trust the config, so block everything.
     mode = 'on';
     blocklist = [];
     terminalBlock = true;
     terminalAllowlist = { ports: [], hosts: [] };
+    dohBlock = true;
+    dohHosts = [];
   }
 
   if (!resolver) {
@@ -389,7 +401,7 @@ async function reconcile() {
   // window) and retried on the next poll; they must never affect DNS
   // enforcement.
   const osBlock = PF_ENABLED && (mode === 'on' || failClosed) && terminalBlock;
-  const rules = osBlock ? pf.buildAnchorRules({ allowPorts: terminalAllowlist.ports, allowHosts: terminalAllowlist.hosts }) : [];
+  const rules = osBlock ? pf.buildAnchorRules({ allowPorts: terminalAllowlist.ports, allowHosts: terminalAllowlist.hosts, dohBlock, dohHosts }) : [];
   const rulesJson = JSON.stringify(rules);
   if (osBlock && rulesJson !== lastAnchorJson) {
     try {
@@ -428,7 +440,42 @@ async function reconcile() {
     }
   }
 
+  // Watch pf's packet counters for the DoH/DoT block rules and log whenever
+  // something actually attempted a bypass. DNS-level filtering alone would
+  // stay silent here — only a packet counter can see it. Deltas, not absolute
+  // counts, and at most one entry per 15 s.
+  if (pfActive) sweepDohCounters();
+
   writeHeartbeat();
+}
+
+// See the call site above. Polls `pfctl -a auren -vsr`, maps the DoH block
+// rules by index (dohBlockRange), and logs the packet delta.
+function sweepDohCounters() {
+  if (!dohBlock || !pfActive) return;
+  const now = Date.now();
+  if (now - lastDohSweep < 15000) return;
+  lastDohSweep = now;
+  const range = pf.dohBlockRange({ allowPorts: terminalAllowlist.ports, allowHosts: terminalAllowlist.hosts, dohBlock, dohHosts });
+  if (!range) return;
+  const res = pf.ruleStats();
+  if (!res.ok || !Array.isArray(res.stats) || res.stats.length < range.start + range.count) return;
+  let packets = 0;
+  for (let i = range.start; i < range.start + range.count; i++) {
+    packets += res.stats[i] ? res.stats[i].packets : 0;
+  }
+  if (lastDohPackets < 0) {
+    // First sweep after an anchor (re)load: anchor reloads reset counters, so
+    // this establishes the baseline without logging a phantom delta.
+    lastDohPackets = packets;
+    return;
+  }
+  const delta = packets - lastDohPackets;
+  if (delta > 0) {
+    logActivity(makeEntry('daemon', 'doh_blocked', null, delta + ' packet(s) to known DoH/DoT endpoints blocked'));
+    log('info', 'DoH/DoT block attempt: ' + delta + ' packet(s)');
+  }
+  lastDohPackets = packets;
 }
 
 /* -------------------------------- main ------------------------------- */
