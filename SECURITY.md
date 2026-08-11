@@ -18,9 +18,14 @@ This policy covers defects that undermine the guarantees it *does* claim:
   store, missing signing key, or a silent daemon (missed heartbeats) must
   result in deny-all enforcement and a visible degraded state, never silent
   open access;
-- **centralized block state**: the canonical block list lives only in the main
-  process (encrypted at rest, 0600 perms, verified at startup); no renderer or
-  bridge component holds its own writable copy;
+- **centralized block state**: the canonical block list (sites *and* apps)
+  lives only in the main process (encrypted at rest, 0600 perms, verified at
+  startup); no renderer or bridge component holds its own writable copy;
+- **app blocking while Protection is ON**: the root daemon kills blocked apps
+  (exact executable-path and argv-token matching — never substrings — with a
+  safety floor that refuses entries pointing at the daemon's own interpreter)
+  and re-kills them while protection stays ON; the block list is enforced from
+  the same signed, fail-closed config as DNS and the firewall;
 - **OS/terminal-level network blocking**: while Protection is ON the root
   daemon loads a dedicated pf anchor (`auren`) that blocks ICMP echo, outbound
   command ports (SSH/FTP/Telnet/SMB/DoT/…), cloud-metadata IPs, and the known
@@ -40,6 +45,15 @@ This policy covers defects that undermine the guarantees it *does* claim:
   logged, reset to safe defaults, and surfaced in the UI;
 - **the privacy invariant**: no biometric or credential data ever passes
   through Auren's process — it only consumes pass/fail results from OS APIs;
+- **keystroke shielding while Protection is ON**: Auren's window must be
+  excluded from screen captures (`setContentProtection`), sensitive inputs must
+  render masked, and while the Auren window holds keyboard focus macOS Secure
+  Event Input must be enabled so keyboard-interception processes cannot read
+  the user's keys — and must be released again on blur/window-close/quit so it
+  never breaks other apps' keyboard-observing features. This shields Auren's
+  own surface only; keystrokes typed in other apps are an accepted limitation
+  (an agent with Screen Recording or Accessibility permission can still read
+  those), not a vulnerability of this layer;
 - **accidental collection or transmission of private data** (the activity log
   must never contain more than domain, timestamp, outcome, and a classifier
   type label — never the underlying values);
@@ -58,7 +72,11 @@ not blocked (only explicit non-HTTPS-on-443 tunnels are), guests in VMs and
 containers have their own network stack that may bypass the host anchor, and
 network-free local code execution (`rm -rf`, `osascript`, compiled binaries)
 is outside Auren's reach — stopping that requires the agent itself to run in a
-sandbox.
+sandbox. App blocking has the same cooperative boundaries: it is a
+kill-loop with exact-path matching, not a sandbox — a blocked binary that is
+renamed or relocated after being added stops matching, a process not on the
+list at all runs freely, and a blocked app can exist for ~1 s between launch
+and kill.
 
 ## Reporting
 

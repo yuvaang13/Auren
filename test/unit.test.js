@@ -143,6 +143,22 @@ test('config round-trips dohBlock and dohHosts', () => {
   assert.deepStrictEqual(back.dohHosts, ['1.1.1.1', '8.8.8.8']);
 });
 
+test('config round-trips the app block list, dropping malformed/duplicate entries', () => {
+  const dir = tmpDir();
+  const cfg = config.readConfig(dir);
+  assert.deepStrictEqual(cfg.appBlocklist, []);
+  cfg.appBlocklist = [
+    { id: 'com.apple.Safari', name: 'Safari', path: '/Applications/Safari.app/Contents/MacOS/Safari' },
+    { id: 'com.apple.Safari', name: 'Safari dup' },
+    { id: 'bad id', name: 'X', path: '/x' }
+  ];
+  config.writeConfig(dir, cfg);
+  const back = config.readConfig(dir);
+  assert.deepStrictEqual(back.appBlocklist, [
+    { id: 'com.apple.Safari', name: 'Safari', path: '/Applications/Safari.app/Contents/MacOS/Safari' }
+  ]);
+});
+
 console.log('signed config');
 test('writeSignedConfig creates config + signature sidecar', () => {
   const dir = tmpDir();
@@ -275,6 +291,7 @@ test('activity toPlainText covers command + pf outcomes', () => {
   assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'pf_applied')).includes('firewall rules applied'));
   assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'pf_cleared')).includes('restored'));
   assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'pf_failed', null, 'boom')).includes('could not be applied'));
+  assert.ok(activity.toPlainText(activity.makeEntry('app', 'blocked', null, 'Discord')).includes('Blocked app: Discord'));
 });
 
 test('activity toPlainText covers doh_blocked + vm outcomes', () => {
@@ -461,6 +478,111 @@ test('quitRequiresAuth gates quit only while protection is ON', () => {
 test('quitRequiresAuth skips the gate during a verified unlock cooldown', () => {
   const unlocking = { mode: 'on', failClosed: false, lock: { state: 'unlocking', unlockExpiry: Date.now() + 5000 } };
   assert.ok(!quitRequiresAuth(unlocking), 'a verified unlock in flight counts as authenticated');
+});
+
+console.log('keystroke shield');
+const { keystrokeShieldActive, secureInputWanted } = require('../src/core/shield');
+
+test('keystroke shield is part of Protection Mode (no toggle)', () => {
+  assert.ok(keystrokeShieldActive({ mode: 'on', failClosed: false }));
+  assert.ok(keystrokeShieldActive({ mode: 'off', failClosed: true }), 'fail-closed deny-all is shielded too');
+  assert.ok(!keystrokeShieldActive({ mode: 'off', failClosed: false }));
+  assert.ok(!keystrokeShieldActive(null));
+  assert.ok(!keystrokeShieldActive({}));
+});
+
+test('secure input is wanted only while Auren actually has keyboard focus', () => {
+  assert.ok(secureInputWanted({ mode: 'on', failClosed: false }, true));
+  assert.ok(!secureInputWanted({ mode: 'on', failClosed: false }, false), 'blur must release Secure Event Input');
+  assert.ok(!secureInputWanted({ mode: 'off', failClosed: false }, true));
+  assert.ok(!secureInputWanted({ mode: 'off', failClosed: true }, false));
+});
+
+console.log('app blocking');
+const apps = require('../src/core/apps');
+
+test('parsePsLine parses pid and argv', () => {
+  assert.deepStrictEqual(
+    apps.parsePsLine('   123   /Applications/Safari.app/Contents/MacOS/Safari'),
+    { pid: 123, exe: '/Applications/Safari.app/Contents/MacOS/Safari', tokens: ['/Applications/Safari.app/Contents/MacOS/Safari'] }
+  );
+  assert.deepStrictEqual(apps.parsePsLine('456 /bin/sh /tmp/blocked-app'), { pid: 456, exe: '/bin/sh', tokens: ['/bin/sh', '/tmp/blocked-app'] });
+  assert.strictEqual(apps.parsePsLine('not a pid'), null);
+  assert.strictEqual(apps.parsePsLine(''), null);
+  assert.strictEqual(apps.parsePsLine('0 root'), null, 'pid 0 is never a killable process');
+});
+
+test('exeMatches matches exact path, basename, argv token — never substrings', () => {
+  const entry = { id: 'com.test.discord', name: 'Discord', path: '/Applications/Discord.app/Contents/MacOS/Discord' };
+  assert.ok(apps.exeMatches('/Applications/Discord.app/Contents/MacOS/Discord', [], entry));
+  assert.ok(apps.exeMatches('/Applications/Discord.app/Contents/MacOS/Discord', ['/Applications/Discord.app/Contents/MacOS/Discord'], entry));
+  assert.ok(apps.exeMatches('/bin/node', ['/bin/node', '/Applications/Discord.app/Contents/MacOS/Discord'], entry), 'argv token match');
+  assert.ok(!apps.exeMatches('/Applications/Discord.app/Contents/MacOS/Discord Web', [], entry), 'no substring match');
+  assert.ok(!apps.exeMatches('/usr/bin/sleep', ['/usr/bin/sleep', '1'], entry));
+  assert.ok(!apps.exeMatches('', [], entry));
+  assert.ok(!apps.exeMatches('/Applications/Discord.app/Contents/MacOS/Discord', [], null), 'null entry never matches');
+  assert.ok(!apps.exeMatches('/Applications/Discord.app/Contents/MacOS/Discord', [], { id: 'x', name: 'x', path: null }), 'pathless entry never matches');
+});
+
+test('validateBlockApp accepts object entries and bare bundle IDs', () => {
+  const r = apps.validateBlockApp({ id: 'com.apple.Safari', name: 'Safari', path: '/Applications/Safari.app/Contents/MacOS/Safari' });
+  assert.ok(r.ok);
+  assert.strictEqual(r.entry.name, 'Safari');
+  const s = apps.validateBlockApp('com.apple.Safari');
+  assert.ok(s.ok);
+  assert.strictEqual(s.entry.id, 'com.apple.Safari');
+  assert.strictEqual(s.entry.path, null);
+  const p = apps.validateBlockApp('/Applications/Safari.app/Contents/MacOS/Safari');
+  assert.ok(p.ok);
+  assert.strictEqual(p.entry.path, '/Applications/Safari.app/Contents/MacOS/Safari');
+  assert.ok(!apps.validateBlockApp('').ok);
+  assert.ok(!apps.validateBlockApp('bad id').ok);
+  assert.ok(!apps.validateBlockApp('com.apple.Safari$').ok);
+  assert.ok(!apps.validateBlockApp(null).ok);
+});
+
+test('normalizeAppBlocklist keeps only valid unique entries', () => {
+  const list = apps.normalizeAppBlocklist([
+    { id: 'com.a', name: 'A', path: '/Applications/A.app/Contents/MacOS/A' },
+    { id: 'com.a', name: 'A dup' },
+    { id: 'bad id', name: 'X', path: '/x' },
+    null,
+    { id: 'com.b', name: 'B', path: '/Applications/B.app/Contents/MacOS/B' }
+  ]);
+  assert.strictEqual(list.length, 2);
+  assert.strictEqual(list[0].id, 'com.a');
+  assert.strictEqual(list[1].id, 'com.b');
+});
+
+test('findBlockedPids finds blocked apps and skips self/protected interpreters', () => {
+  const lines = [
+    '  1 launchd',
+    ' 42 /usr/sbin/syslogd',
+    ' 100 /Applications/Discord.app/Contents/MacOS/Discord',
+    ' 200 /bin/sh /tmp/blocked-app',
+    ' 999 /Applications/FreeApp.app/Contents/MacOS/FreeApp'
+  ];
+  const list = [
+    { id: 'com.test.discord', name: 'Discord', path: '/Applications/Discord.app/Contents/MacOS/Discord' },
+    { id: 'com.test.blocked', name: 'blocked-app', path: '/tmp/blocked-app' }
+  ];
+  const hits = apps.findBlockedPids(lines, list, { selfPid: 100, protectedExes: ['/bin/sh'] });
+  assert.strictEqual(hits.length, 0, 'self pid and protected interpreter are never killed');
+  const hits2 = apps.findBlockedPids(lines, list, { selfPid: 0 });
+  assert.deepStrictEqual(hits2.map((h) => h.pid).sort((a, b) => a - b), [100, 200]);
+  assert.strictEqual(apps.findBlockedPids(lines, [], { selfPid: 0 }).length, 0, 'empty list blocks nothing');
+});
+
+test('appSafetyFloor drops entries pointing at the daemon interpreter', () => {
+  const floor = apps.appSafetyFloor([
+    { id: 'org.electron', name: 'Electron', path: '/usr/local/lib/auren/Electron' },
+    { id: 'com.safe', name: 'Safe', path: '/Applications/Safe.app/Contents/MacOS/Safe' }
+  ], { selfExes: ['/usr/local/lib/auren/Electron'] });
+  assert.strictEqual(floor.appBlocklist.length, 1);
+  assert.strictEqual(floor.appBlocklist[0].id, 'com.safe');
+  assert.strictEqual(floor.dropped.length, 1);
+  assert.ok(floor.changed);
+  assert.ok(!apps.appSafetyFloor([{ id: 'com.safe', name: 'Safe', path: '/x' }], { selfExes: ['/y'] }).changed);
 });
 
 console.log('dns-message');

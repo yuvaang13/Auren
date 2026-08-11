@@ -24,7 +24,7 @@ const DAEMON_LIB = '/usr/local/lib/auren';
 // app compares the installed daemon's version against this and re-runs the
 // installer when they disagree, so a running launchd job never silently keeps
 // old behavior after an app update. Keep in sync with daemon.js DAEMON_VERSION.
-const DAEMON_VERSION = 9;
+const DAEMON_VERSION = 10;
 
 function isDaemonInstalled() {
   return fs.existsSync(PLIST);
@@ -87,9 +87,9 @@ function findNodeBin(exePath) {
 }
 
 function buildInstallerScript(opts) {
-  // `srcDir` must contain all eight modules flat (daemon, resolver,
-  // dns-message, cache, pf, domains, config, activity). The app stages them
-  // into a temp dir first so the privileged installer can read them (root
+  // `srcDir` must contain all nine modules flat (daemon, resolver,
+  // dns-message, cache, pf, domains, config, activity, apps). The app stages
+  // them into a temp dir first so the privileged installer can read them (root
   // can't always read files under TCC-protected folders like ~/Desktop).
   const src = opts.srcDir;
   const cfg = opts.configPath;
@@ -105,7 +105,7 @@ function buildInstallerScript(opts) {
     'SPOOL=' + shellQuote(spool),
     'SRC=' + shellQuote(src),
     'mkdir -p "$LIB" "$SPOOL"',
-    'cp "$SRC/dns-message.js" "$SRC/resolver.js" "$SRC/daemon.js" "$SRC/cache.js" "$SRC/pf.js" "$SRC/domains.js" "$SRC/config.js" "$SRC/activity.js" "$LIB/"',
+    'cp "$SRC/dns-message.js" "$SRC/resolver.js" "$SRC/daemon.js" "$SRC/cache.js" "$SRC/pf.js" "$SRC/domains.js" "$SRC/config.js" "$SRC/activity.js" "$SRC/apps.js" "$LIB/"',
     'chmod 755 "$LIB/daemon.js"',
     'cat > ' + shellQuote(PLIST) + ' <<PLIST',
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -195,7 +195,7 @@ function buildInstallerScript(opts) {
   ].join('\n');
 }
 
-// Stages the eight flat daemon modules into a temp dir readable by the
+// Stages the nine flat daemon modules into a temp dir readable by the
 // privileged installer.
 function stageDaemonFiles() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auren-stage-'));
@@ -204,7 +204,7 @@ function stageDaemonFiles() {
   for (const f of ['daemon.js', 'resolver.js', 'dns-message.js', 'cache.js', 'pf.js']) {
     fs.copyFileSync(path.join(dnsDir, f), path.join(dir, f));
   }
-  for (const f of ['domains.js', 'config.js', 'activity.js']) {
+  for (const f of ['domains.js', 'config.js', 'activity.js', 'apps.js']) {
     fs.copyFileSync(path.join(coreDir, f), path.join(dir, f));
   }
   return dir;

@@ -8,9 +8,9 @@
  * half-written file.
  *
  * Note: the daemon reads this file while running as root. It only ever
- * consumes `mode`, `blocklist`, `terminalBlock`, `terminalAllowlist`,
- * `dohBlock`, and `dohHosts` — no other fields — and it treats the file
- * as untrusted input (it re-validates everything it reads).
+ * consumes `mode`, `blocklist`, `appBlocklist`, `terminalBlock`,
+ * `terminalAllowlist`, `dohBlock`, and `dohHosts` — no other fields — and it
+ * treats the file as untrusted input (it re-validates everything it reads).
  */
 
 'use strict';
@@ -18,8 +18,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { normalizeDomain, validateBlockDomain } = require('./domains');
+const { normalizeAppBlocklist } = require('./apps');
 
-const DEFAULT_CONFIG = Object.freeze({ version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [] });
+const DEFAULT_CONFIG = Object.freeze({ version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [] });
 const SIG_SUFFIX = '.sig';
 
 // Keep only the shape of the allowlist; strict IP/CIDR + port validation
@@ -59,6 +60,7 @@ function readConfigFile(file) {
       version: 1,
       mode,
       blocklist,
+      appBlocklist: normalizeAppBlocklist(parsed.appBlocklist),
       failClosed: parsed.failClosed === true,
       terminalBlock: parsed.terminalBlock !== false,
       terminalAllowlist: normalizeAllowlist(parsed.terminalAllowlist),
@@ -70,7 +72,7 @@ function readConfigFile(file) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       try { fs.writeFileSync(file + '.corrupt', String(raw || '') + '\n', { flag: 'a' }); } catch {}
     }
-    return { version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [] };
+    return { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [] };
   }
 }
 
@@ -81,6 +83,7 @@ function writeConfigFile(file, cfg) {
     version: 1,
     mode: cfg.mode,
     blocklist: cfg.blocklist,
+    appBlocklist: normalizeAppBlocklist(cfg.appBlocklist),
     failClosed: cfg.failClosed === true,
     terminalBlock: cfg.terminalBlock !== false,
     terminalAllowlist: normalizeAllowlist(cfg.terminalAllowlist),

@@ -3,7 +3,7 @@
 const api = window.auren;
 const $ = (id) => document.getElementById(id);
 
-let state = { mode: 'off', blocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0, degraded: false, terminalBlock: true, dohBlock: true, vmsDetected: [], settingsTampered: false };
+let state = { mode: 'off', blocklist: [], appBlocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0, degraded: false, terminalBlock: true, dohBlock: true, vmsDetected: [], settingsTampered: false, keystrokeShield: false };
 let busy = false;
 let countdownTimer = null;
 
@@ -39,7 +39,9 @@ function showError(id, msg) {
 
 const ICON_LINK = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9.5 12a2.5 2.5 0 003.6 3.4l2.5-2.5a2.5 2.5 0 10-3.5-3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M14.5 12a2.5 2.5 0 00-3.6-3.4l-2.5 2.5a2.5 2.5 0 103.5 3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-const KIND_TAG = { block: 'Blocked', toggle: 'Mode', agent: 'Gated', command: 'Command', daemon: 'Service' };
+const ICON_APP = '<svg class="row-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M9 9.5h.01M14 9.5h.01M9 14.5h.01M14 14.5h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
+
+const KIND_TAG = { block: 'Blocked', toggle: 'Mode', agent: 'Gated', command: 'Command', app: 'App', daemon: 'Service' };
 
 function updateStatusPill(on) {
   const pill = $('status-pill');
@@ -74,17 +76,21 @@ function renderStats() {
   let blocks = 0;
   let gated = 0;
   let osBlocks = 0;
+  let appBlocks = 0;
   for (const e of items) {
     if (e.kind === 'block') blocks += 1;
     else if (e.kind === 'agent') gated += 1;
     else if (e.kind === 'command' && e.outcome === 'blocked') osBlocks += 1;
     else if (e.kind === 'daemon' && e.outcome === 'pf_applied') osBlocks += 1;
+    else if (e.kind === 'app' && e.outcome === 'blocked') appBlocks += 1;
   }
   $('stat-sites').textContent = state.blocklist.length;
   $('stat-blocks').textContent = blocks;
   $('stat-gated').textContent = gated;
   $('stat-os').textContent = osBlocks;
+  $('stat-apps').textContent = appBlocks;
   $('sites-count').textContent = state.blocklist.length;
+  $('apps-count').textContent = (state.appBlocklist || []).length;
 }
 
 function render() {
@@ -96,6 +102,10 @@ function render() {
   toggle.disabled = busy || inCooldown;
 
   $('degraded-banner').classList.toggle('hidden', !state.degraded);
+
+  const shieldOn = !!state.keystrokeShield;
+  $('keystroke-shield-badge').classList.toggle('hidden', !shieldOn);
+  document.body.classList.toggle('keystroke-shield', shieldOn);
 
   const cd = $('cooldown-display');
   cd.classList.toggle('hidden', !inCooldown);
@@ -131,23 +141,44 @@ function render() {
     settingsWarn.textContent = 'Your settings file failed verification, so protection is running on safe defaults. Open ~/Library/Application Support/Auren/settings.json to review it, then restart auren.';
   }
 
-  const list = $('block-list');
-  list.textContent = '';
-  $('block-empty').classList.toggle('hidden', state.blocklist.length > 0);
-  for (const d of state.blocklist) {
-    const li = document.createElement('li');
-    li.className = 'block-item';
-    li.innerHTML = ICON_LINK + '<span class="domain"></span>';
-    li.querySelector('.domain').textContent = d;
-    const btn = document.createElement('button');
-    btn.className = 'remove-btn';
-    btn.type = 'button';
-    btn.textContent = '\u00d7';
-    btn.setAttribute('aria-label', 'Remove ' + d);
-    btn.addEventListener('click', () => api.removeDomain(d));
-    li.append(btn);
-    list.append(li);
-  }
+    const list = $('block-list');
+    list.textContent = '';
+    $('block-empty').classList.toggle('hidden', state.blocklist.length > 0);
+    for (const d of state.blocklist) {
+      const li = document.createElement('li');
+      li.className = 'block-item';
+      li.innerHTML = ICON_LINK + '<span class="domain"></span>';
+      li.querySelector('.domain').textContent = d;
+      const btn = document.createElement('button');
+      btn.className = 'remove-btn';
+      btn.type = 'button';
+      btn.textContent = '\u00d7';
+      btn.setAttribute('aria-label', 'Remove ' + d);
+      btn.addEventListener('click', () => api.removeDomain(d));
+      li.append(btn);
+      list.append(li);
+    }
+
+    const alist = $('app-block-list');
+    alist.textContent = '';
+    const blockedApps = state.appBlocklist || [];
+    $('app-block-empty').classList.toggle('hidden', blockedApps.length > 0);
+    for (const a of blockedApps) {
+      const li = document.createElement('li');
+      li.className = 'block-item';
+      li.innerHTML = ICON_APP + '<div class="app-name-wrap"><span class="domain"></span><span class="app-sub"></span></div>';
+      li.querySelector('.domain').textContent = a.name;
+      li.querySelector('.app-sub').textContent = a.id;
+      const btn = document.createElement('button');
+      btn.className = 'remove-btn';
+      btn.type = 'button';
+      btn.textContent = '\u00d7';
+      btn.setAttribute('aria-label', 'Remove ' + a.name);
+      btn.addEventListener('click', () => api.removeApp(a.id));
+      li.append(btn);
+      alist.append(li);
+    }
+
 
   const act = $('activity-list');
   act.textContent = '';
@@ -238,6 +269,69 @@ async function init() {
       showError('add-error', r.error);
     }
   });
+
+  // App search — the app card is search-as-you-type + pick, so there is no
+  // form/submit. A stale in-flight search result must never overwrite a newer
+  // one, so each input tick bumps a sequence and stale responses are dropped.
+  let appSearchSeq = 0;
+  let appSearchTimer = null;
+  const searchInput = $('app-search-input');
+  const matchesBox = $('app-matches');
+
+  function clearMatches() {
+    matchesBox.classList.add('hidden');
+    matchesBox.textContent = '';
+  }
+
+  function appSearch() {
+    const q = searchInput.value.trim();
+    if (!q) { clearMatches(); return; }
+    const seq = ++appSearchSeq;
+    api.searchApps(q).then((matches) => {
+      if (seq !== appSearchSeq) return;
+      matchesBox.textContent = '';
+      if (!matches.length) {
+        const li = document.createElement('li');
+        li.className = 'app-match empty-match';
+        li.textContent = 'No apps found';
+        matchesBox.append(li);
+      } else {
+        for (const m of matches.slice(0, 8)) {
+          const li = document.createElement('li');
+          li.className = 'app-match';
+          li.innerHTML = '<span class="app-match-name"></span><span class="app-match-id"></span>';
+          li.querySelector('.app-match-name').textContent = m.name;
+          li.querySelector('.app-match-id').textContent = m.id;
+          li.addEventListener('pointerdown', (ev) => {
+            ev.preventDefault();
+            addApp(m);
+          });
+          matchesBox.append(li);
+        }
+      }
+      matchesBox.classList.remove('hidden');
+    }).catch(() => { /* search is best-effort */ });
+  }
+
+  searchInput.addEventListener('input', () => {
+    clearTimeout(appSearchTimer);
+    appSearchTimer = setTimeout(appSearch, 180);
+  });
+  searchInput.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { searchInput.value = ''; clearMatches(); }
+  });
+
+  async function addApp(entry) {
+    const r = await api.addApp(entry);
+    clearMatches();
+    searchInput.value = '';
+    $('app-error').classList.add('hidden');
+    if (r && r.ok) {
+      state.appBlocklist = r.appBlocklist;
+    } else if (r && r.error) {
+      showError('app-error', r.error);
+    }
+  }
 
   api.onChange((s) => {
     state = s;

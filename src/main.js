@@ -8,7 +8,8 @@
  *     in this process, persisted to an encrypted store (guardrail.dat) that the
  *     renderer can never read directly.
  *   - The renderer and any agent-traffic bridge talk ONLY to this process via
- *     IPC (state:get, guardrail:is-blocked, agent:inspect-action, mode:set).
+ *     IPC (state:get, guardrail:is-blocked, agent:inspect-action, mode:set,
+ *     blocklist:add/remove, appblock:search/add/remove).
  *   - The root DNS daemon is a separate process that cannot do Electron IPC,
  *     so it consumes a signed read-only snapshot (config.json + config.sig)
  *     written here. It verifies the signature before trusting a single byte and
@@ -41,9 +42,12 @@ const policy = require('./core/policy');
 const pf = require('./dns/pf');
 const virt = require('./core/virt');
 const { normalizeDomain, domainMatches, validateBlockDomain } = require('./core/domains');
+const { normalizeAppBlocklist, validateBlockApp } = require('./core/apps');
 const { quitRequiresAuth } = require('./core/quit');
 const dnsController = require('./platform/dns-controller');
+const appResolver = require('./platform/app-resolver');
 const { requireAuthentication, requireNativeAuth } = require('./platform/biometrics');
+const shield = require('./core/shield');
 
 const USER_DATA = path.join(os.homedir(), 'Library', 'Application Support', 'Auren');
 const CONFIG_FILE = path.join(USER_DATA, 'config.json');
@@ -73,6 +77,11 @@ let mainWindow = null;
 let lastSent = '';
 const POLL_MS = 1000;
 
+// Keystroke-shield state (see core/shield.js). Tracked here so the repeated
+// 1s poll only calls the native APIs when the value actually changes.
+let shieldContentProtection = null;
+let shieldSecureInput = false;
+
 /* --------------------------- fail-closed state --------------------------- */
 
 // After a successful unlock (Touch ID / passcode), the block list stays active
@@ -87,7 +96,7 @@ let offCooldownUntil = 0;
 let forceQuit = false;
 
 // The canonical, main-process-owned block state.
-let blockState = { version: 1, mode: 'off', blocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], lock: { state: 'locked', unlockExpiry: 0 } };
+let blockState = { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], lock: { state: 'locked', unlockExpiry: 0 } };
 let storeIntegrityKey = null;
 
 // True when enforcement can't be trusted (daemon silent, tampered/corrupt
@@ -279,6 +288,7 @@ function normalizeLoadedState(loaded) {
     version: 1,
     mode: loaded.mode === 'on' ? 'on' : 'off',
     blocklist: Array.isArray(loaded.blocklist) ? loaded.blocklist.map(normalizeDomain).filter(Boolean) : [],
+    appBlocklist: normalizeAppBlocklist(loaded.appBlocklist),
     failClosed: loaded.failClosed === true,
     terminalBlock: loaded.terminalBlock !== false,
     terminalAllowlist: allowlist,
@@ -318,6 +328,7 @@ function persist() {
     version: 1,
     mode: blockState.mode,
     blocklist: blockState.blocklist,
+    appBlocklist: blockState.appBlocklist,
     failClosed: blockState.failClosed,
     terminalBlock,
     terminalAllowlist,
@@ -329,6 +340,7 @@ function persist() {
     version: 1,
     mode: blockState.mode,
     blocklist: blockState.blocklist,
+    appBlocklist: blockState.appBlocklist,
     failClosed: blockState.failClosed,
     terminalBlock,
     terminalAllowlist,
@@ -366,7 +378,7 @@ function ensureFiles() {
     // — we can't trust whatever was in there. Preserve the corrupt file for
     // inspection, then start deny-all (mode ON + failClosed).
     try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.corrupt'); } catch { /* best-effort */ }
-    blockState = { version: 1, mode: 'on', blocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], lock: { state: 'locked', unlockExpiry: 0 } };
+    blockState = { version: 1, mode: 'on', blocklist: [], appBlocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], lock: { state: 'locked', unlockExpiry: 0 } };
     degraded = true;
     logActivity(activity.makeEntry('daemon', 'integrity_failed', null, 'encrypted store could not be verified: ' + (loadError && loadError.message)));
     notifyDegraded('auren could not verify its encrypted block list and has failed closed. Nothing will be allowed through until you review it.');
@@ -390,6 +402,7 @@ function getState() {
     platform: process.platform,
     mode: blockState.mode,
     blocklist: blockState.blocklist.slice(),
+    appBlocklist: blockState.appBlocklist.slice(),
     activity: activity.readActivity(ACTIVITY_FILE, 100).reverse().map((e) => Object.assign({}, e, { text: activity.toPlainText(e) })),
     modeCooldownUntil: offCooldownUntil,
     enforcement: dnsController.isEnforcing(),
@@ -401,6 +414,7 @@ function getState() {
     dohHosts: effectiveDohHosts(),
     vmsDetected: virt.runningVirtualization(),
     settingsTampered: settingsTampered,
+    keystrokeShield: shield.keystrokeShieldActive(blockState),
     lock: blockState.lock
   };
 }
@@ -422,8 +436,36 @@ function checkVirtualization() {
   }
 }
 
+// Hide the human's keystrokes while Protection is on (part of Protection Mode).
+//   - Window content protection: Auren's window can't be screen-captured by an
+//     AI agent, so nothing typed in Auren ever appears in a recording.
+//   - Secure Event Input (macOS only): while Auren's window has keyboard focus,
+//     keyboard-intercept processes (accessibility / event-tap keyloggers) can't
+//     read the user's keys. Disabled the moment focus leaves so other apps'
+//     keyboard-observing features keep working (Apple's "use it fairly" rule).
+function applyKeystrokeShield() {
+  const active = shield.keystrokeShieldActive(blockState);
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    if (shieldSecureInput) {
+      shieldSecureInput = false;
+      try { if (typeof app.setSecureKeyboardEntryEnabled === 'function') app.setSecureKeyboardEntryEnabled(false); } catch { /* best-effort */ }
+    }
+    return;
+  }
+  if (shieldContentProtection !== active) {
+    shieldContentProtection = active;
+    try { mainWindow.setContentProtection(active); } catch { /* best-effort */ }
+  }
+  const wantSecure = shield.secureInputWanted(blockState, mainWindow.isFocused());
+  if (wantSecure !== shieldSecureInput) {
+    shieldSecureInput = wantSecure;
+    try { if (typeof app.setSecureKeyboardEntryEnabled === 'function') app.setSecureKeyboardEntryEnabled(wantSecure); } catch { /* best-effort */ }
+  }
+}
+
 function pushState() {
   checkVirtualization();
+  applyKeystrokeShield();
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const s = getState();
   const key = JSON.stringify(s);
@@ -534,7 +576,10 @@ function createWindow() {
     }
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('focus', applyKeystrokeShield);
+  mainWindow.on('blur', applyKeystrokeShield);
+  mainWindow.on('closed', () => { mainWindow = null; applyKeystrokeShield(); });
+  applyKeystrokeShield();
 }
 
 /* -------------------------------- IPC -------------------------------- */
@@ -559,6 +604,41 @@ ipcMain.handle('blocklist:remove', (_e, domain) => {
   persist();
   pushState();
   return { ok: true, blocklist: blockState.blocklist.slice() };
+});
+
+// App-blocking surface, mirroring the domain list. Search resolves a query to
+// installed apps (main process only — mdfind + plutil need a user session);
+// add/remove persist through the same encrypted store + signed config the
+// daemon reads, so a blocked app is enforced the moment the daemon polls.
+ipcMain.handle('appblock:search', (_e, query) => {
+  const own = app.getPath('exe');
+  return appResolver.searchApps(query, { excludePaths: own ? [path.resolve(own)] : [] });
+});
+
+ipcMain.handle('appblock:add', (_e, input) => {
+  const v = validateBlockApp(input);
+  if (!v.ok) return { ok: false, error: v.error, appBlocklist: null };
+  const entry = v.entry;
+  // Never offer to block Auren itself (the daemon re-enforces this at kill
+  // time via its own interpreter path; this is defense-in-depth at the UI).
+  const own = path.resolve(app.getPath('exe'));
+  if (entry.path && path.resolve(entry.path) === own) {
+    return { ok: false, error: 'Auren can\u2019t block itself.', appBlocklist: null };
+  }
+  if (!blockState.appBlocklist.some((a) => a.id === entry.id)) {
+    blockState.appBlocklist.push(entry);
+    persist();
+    pushState();
+  }
+  return { ok: true, appBlocklist: blockState.appBlocklist.slice() };
+});
+
+ipcMain.handle('appblock:remove', (_e, id) => {
+  const key = String(id || '').trim();
+  blockState.appBlocklist = blockState.appBlocklist.filter((a) => a.id !== key);
+  persist();
+  pushState();
+  return { ok: true, appBlocklist: blockState.appBlocklist.slice() };
 });
 
 // Read-only query for any component that needs to know whether a site is
@@ -747,6 +827,11 @@ if (!gotLock) {
   // skips liftProtectionOnQuit below, so protection stays ON there too — only
   // an authenticated graceful quit can hand the machine back.
   app.on('before-quit', (event) => {
+    // Never leave Secure Event Input enabled behind this app.
+    if (shieldSecureInput) {
+      shieldSecureInput = false;
+      try { if (typeof app.setSecureKeyboardEntryEnabled === 'function') app.setSecureKeyboardEntryEnabled(false); } catch { /* best-effort */ }
+    }
     if (forceQuit || !quitRequiresAuth(blockState)) {
       liftProtectionOnQuit();
       return;

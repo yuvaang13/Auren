@@ -124,8 +124,8 @@ async function daemonTest() {
   const key = crypto.randomBytes(32);
   fs.writeFileSync(keyFile, key, { mode: 0o600 });
 
-  const writeCfg = (mode, blocklist, failClosed) =>
-    config.writeSignedConfig(cfgFile, { version: 1, mode, blocklist, failClosed: !!failClosed }, key);
+  const writeCfg = (mode, blocklist, failClosed, appBlocklist) =>
+    config.writeSignedConfig(cfgFile, { version: 1, mode, blocklist, failClosed: !!failClosed, appBlocklist: appBlocklist || [] }, key);
 
   writeCfg('on', ['bank.com'], false);
   fs.writeFileSync(actFile, '');
@@ -140,6 +140,7 @@ async function daemonTest() {
       AUREN_DAEMON_LOG: path.join(dir, 'daemon.log'),
       AUREN_DNS_ENABLED: '0',
       AUREN_PF_ENABLED: '0',
+      AUREN_APPS_ENABLED: '1',
       AUREN_PORT: String(port)
     }),
     stdio: 'ignore'
@@ -197,6 +198,36 @@ async function daemonTest() {
       await sleep(300);
       const lines = fs.readFileSync(actFile, 'utf8').split('\n').filter((l) => l.trim());
       assert.ok(lines.some((l) => l.includes('"kind":"block"') && l.includes('bank.com')));
+    });
+
+    await test('daemon: kills a running app on the app block list (protection on)', async () => {
+      const dummy = path.join(dir, 'dummy-app.sh');
+      fs.writeFileSync(dummy, '#!/bin/sh\nwhile true; do sleep 1; done\n');
+      fs.chmodSync(dummy, 0o755);
+      writeCfg('on', ['bank.com'], false, [{ id: 'com.auren.test.blockedapp', name: 'blocked-app', path: dummy }]);
+      await sleep(1500);
+      const proc = spawn('/bin/sh', [dummy], { stdio: 'ignore' });
+      await sleep(1800);
+      let alive = true;
+      try { process.kill(proc.pid, 0); } catch { alive = false; }
+      assert.ok(!alive, 'blocked app process must be killed within ~1 s');
+      try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+      const lines = fs.readFileSync(actFile, 'utf8').split('\n').filter((l) => l.trim());
+      assert.ok(lines.some((l) => l.includes('"kind":"app"') && l.includes('blocked-app')), 'the kill must be logged in activity');
+    });
+
+    await test('daemon: leaves apps alone while protection is off', async () => {
+      writeCfg('off', ['bank.com'], false, []);
+      await sleep(1500);
+      const dummy = path.join(dir, 'dummy-app-2.sh');
+      fs.writeFileSync(dummy, '#!/bin/sh\nwhile true; do sleep 1; done\n');
+      fs.chmodSync(dummy, 0o755);
+      const proc = spawn('/bin/sh', [dummy], { stdio: 'ignore' });
+      await sleep(1500);
+      let alive = true;
+      try { process.kill(proc.pid, 0); } catch { alive = false; }
+      assert.ok(alive, 'app must keep running while protection is off');
+      proc.kill('SIGTERM');
     });
   } finally {
     await kill();

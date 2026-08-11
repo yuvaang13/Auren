@@ -15,8 +15,9 @@ const path = require('path');
 
 // kinds: 'block' (a lookup was refused), 'toggle' (protection mode change),
 //        'agent' (an agent form action gated by policy), 'command' (an
-//        OS/terminal-level command gated by policy), 'daemon' (resolver /
-//        firewall / integrity / errors)
+//        OS/terminal-level command gated by policy), 'app' (a blocked app was
+//        killed by the daemon), 'daemon' (resolver / firewall / integrity /
+//        errors)
 // outcome: for block -> 'blocked' | 'allowed'; for toggle -> 'on' | 'off' |
 //          'off_pending' (verified, waiting out the cooldown) | 'off_failed' |
 //          'off_cancelled'; for agent -> 'allowed' | 'blocked' | 'logged';
@@ -74,6 +75,9 @@ function toPlainText(entry) {
       if (entry.outcome === 'blocked') return `Agent command blocked${entry.note ? ' (' + entry.note + ')' : ''} \u00b7 ${time}`;
       if (entry.outcome === 'logged') return `Agent command logged${entry.note ? ' (' + entry.note + ')' : ''} \u00b7 ${time}`;
       return `Agent command \u00b7 ${time}`;
+    case 'app':
+      if (entry.outcome === 'blocked') return `Blocked app: ${entry.note || entry.domain || 'unknown app'} \u00b7 ${time}`;
+      return `App ${entry.outcome} \u00b7 ${time}`;
     case 'daemon':
       if (entry.outcome === 'dns_applied') return `DNS pointing at Auren (system-wide) \u00b7 ${time}`;
       if (entry.outcome === 'dns_restored') return `DNS restored to normal \u00b7 ${time}`;

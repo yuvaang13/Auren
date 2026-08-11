@@ -9,14 +9,17 @@
  *   2. Reconcile the system's real state with the requested Protection Mode:
  *        mode ON  -> point every network service's DNS at 127.0.0.1
  *        mode OFF -> restore each service's previous DNS servers
- *   3. Read the shared config file (mode + block list) and apply it in real
- *      time — no restart needed when the user adds or removes a blocked site.
+ *   3. Read the shared config file (mode + block lists) and apply it in real
+ *      time — no restart needed when the user adds or removes a blocked site
+ *      or app.
+ *   4. Enforce the app block list: kill running copies of blocked apps and
+ *      keep them stopped while protection is on.
  *
- * The daemon consumes the `mode`, `blocklist`, `terminalBlock`,
- * `terminalAllowlist`, `dohBlock`, and `dohHosts` fields of the config
- * file, treats that file as untrusted input, and never touches credentials or
- * biometric data. In test mode (AUREN_DNS_ENABLED=0) it runs the resolver on
- * a configurable port and leaves system DNS alone.
+ * The daemon consumes the `mode`, `blocklist`, `appBlocklist`,
+ * `terminalBlock`, `terminalAllowlist`, `dohBlock`, and `dohHosts` fields of
+ * the config file, treats that file as untrusted input, and never touches
+ * credentials or biometric data. In test mode (AUREN_DNS_ENABLED=0) it runs
+ * the resolver on a configurable port and leaves system DNS alone.
  */
 
 'use strict';
@@ -39,6 +42,7 @@ const pf = require(path.join(__dirname, 'pf.js'));
 const { domainMatches } = load('domains.js');
 const { readConfigFile, verifyData } = load('config.js');
 const { makeEntry, appendActivity } = load('activity.js');
+const apps = load('apps.js');
 
 function logActivity(entry) {
   if (!ACTIVITY) return;
@@ -63,6 +67,7 @@ const DNS_ENABLED = String(process.env.AUREN_DNS_ENABLED || '1') !== '0';
 const PORT = parseInt(process.env.AUREN_PORT || '53', 10);
 const PF_ENABLED = String(process.env.AUREN_PF_ENABLED || '1') !== '0';
 const PF_RULES = process.env.AUREN_PF_RULES || path.join(__dirname, 'pf.rules');
+const APPS_ENABLED = String(process.env.AUREN_APPS_ENABLED || '1') !== '0';
 
 const POLL_MS = 800;
 const LOG_THROTTLE_MS = 5000;
@@ -70,10 +75,11 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 9;
+const DAEMON_VERSION = 10;
 
 let mode = 'off';
 let blocklist = [];
+let appBlocklist = [];
 let resolver = null;
 let upstreamApplied = false;
 let state = { services: {}, applied: false };
@@ -280,6 +286,48 @@ function onBlocked(name) {
   logActivity(makeEntry('block', 'blocked', name));
 }
 
+/* --------------------------- app blocking --------------------------- */
+
+// Dedup key for the per-app kill activity entry (see enforceAppBlocks below):
+// log at most one "Blocked app" line per app per throttle window, even though
+// the kill itself runs on every poll while the app stays running.
+const lastAppKillLog = new Map();
+
+// Kill running copies of blocked apps. Scans `ps -axo pid=,command=`, matches
+// exact executable path / basename / argv token (core/apps.js — never a
+// substring), and kills matches with SIGKILL. Runs on every poll while
+// protection is expected, so a blocked app that is (re)launched is killed
+// within ~1 s and stays stopped. Never touches our own pid or the daemon
+// interpreter (process.execPath); the safety floor below has already stripped
+// any entry pointing at it.
+function enforceAppBlocks() {
+  if (!APPS_ENABLED || appBlocklist.length === 0) return;
+  const r = spawnSync('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+  if (r.status !== 0) {
+    log('error', 'app scan failed: ' + String(r.stderr || r.stdout || '').trim());
+    return;
+  }
+  const hits = apps.findBlockedPids(String(r.stdout || '').split('\n'), appBlocklist, {
+    selfPid: process.pid,
+    protectedExes: [process.execPath]
+  });
+  const now = Date.now();
+  for (const hit of hits) {
+    const key = hit.entry.id;
+    const kill = spawnSync('/bin/kill', ['-9', String(hit.pid)], { encoding: 'utf8' });
+    if (kill.status !== 0) {
+      log('warn', 'could not kill ' + hit.entry.name + ' (pid ' + hit.pid + '): ' + String(kill.stderr || '').trim());
+      continue;
+    }
+    const last = lastAppKillLog.get(key) || 0;
+    if (now - last >= LOG_THROTTLE_MS) {
+      lastAppKillLog.set(key, now);
+      logActivity(makeEntry('app', 'blocked', null, hit.entry.name));
+      log('info', 'killed blocked app ' + hit.entry.name + ' (pid ' + hit.pid + ')');
+    }
+  }
+}
+
 /* --------------------------- cache flushing --------------------------- */
 
 // Drop macOS's cached DNS answers so sites resolved before a protection or
@@ -338,12 +386,15 @@ async function reconcile() {
   if (cfg) {
     mode = cfg.mode;
     blocklist = cfg.blocklist;
+    appBlocklist = cfg.appBlocklist;
     terminalBlock = cfg.terminalBlock !== false;
     terminalAllowlist = cfg.terminalAllowlist || { ports: [], hosts: [] };
     dohBlock = cfg.dohBlock !== false;
     dohHosts = Array.isArray(cfg.dohHosts) ? cfg.dohHosts : [];
   } else {
-    // Fail-closed: we can't trust the config, so block everything.
+    // Fail-closed: we can't trust the config, so block everything. App
+    // blocking keeps the last-verified list — the config is untrusted now,
+    // but the previously verified blocks are still the safe thing to enforce.
     mode = 'on';
     blocklist = [];
     terminalBlock = true;
@@ -372,6 +423,14 @@ async function reconcile() {
     if (floor.changed && floorJson !== lastFloorJson) {
       lastFloorJson = floorJson;
       logActivity(makeEntry('daemon', 'security_floor', null, 'enforced minimum-safety floor on configured terminal/DoH settings'));
+    }
+    // App-block safety floor: never let a (possibly forged) signed config kill
+    // Auren's own daemon interpreter. Entries pointing at process.execPath are
+    // stripped before the kill loop ever sees them.
+    const appFloor = apps.appSafetyFloor(appBlocklist, { selfExes: [process.execPath] });
+    appBlocklist = appFloor.appBlocklist;
+    if (appFloor.changed) {
+      log('warn', 'dropped app-block entry pointing at the daemon interpreter: ' + appFloor.dropped.map((d) => d.id).join(', '));
     }
   }
 
@@ -471,6 +530,10 @@ async function reconcile() {
   // stay silent here — only a packet counter can see it. Deltas, not absolute
   // counts, and at most one entry per 15 s.
   if (pfActive) sweepDohCounters();
+
+  // App blocking: kill running copies of blocked apps while protection is
+  // expected. Deliberately last — it must never hold up DNS/pf enforcement.
+  if (mode === 'on' || failClosed) enforceAppBlocks();
 
   writeHeartbeat();
 }

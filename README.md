@@ -19,6 +19,12 @@ so the site is unreachable from **every** browser and app — not just one. Ther
 is no browser extension, no per-browser setup, and nothing an app can do to
 "skip" the block by opening a different window.
 
+When **Protection Mode is ON**, apps you block also **cannot run**. Search an
+installed app by name, add it to the app block list, and the root background
+service kills it the moment it starts — and keeps killing it — until you
+unblock it or turn protection off. Like DNS, this is system-wide: it doesn't
+matter which browser or process launched the app.
+
 When you flip protection ON (or add/remove a site) Auren also flushes the
 macOS DNS cache, so sites you visited *before* the change don't keep loading
 from a previously-cached IP — the next lookup is forced through the local
@@ -50,6 +56,15 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
 - **It does not detect humans vs. AI in real time.** Protection is a manual
   on/off switch. Auren does not try to tell whether a given lookup came from
   you or from an agent.
+- **It does not hide keystrokes outside Auren.** The keystroke shield covers
+  only Auren's own window and inputs. Keystrokes you type into other apps —
+  while an AI agent watches the screen or reads the keyboard — are outside its
+  reach (see [Keystroke shielding](#keystroke-shielding-part-of-protection-mode)).
+- **It does not sandbox apps.** Blocked apps are killed (and re-killed) while
+  protection is on, but any process that isn't on the app block list at all —
+  or a blocked binary that is renamed or relocated after it was added — runs
+  freely. App blocking is a kill-loop with exact-path matching, not an
+  application sandbox (see [App blocking](#app-blocking-blocked-apps-cant-run)).
 - **It does not defend against a fully adversarial agent with deep system
   access.** If an agent already has root-level OS access it could reconfigure
   DNS itself, stop the background service, edit the config file, or reinstall
@@ -98,14 +113,14 @@ what is guaranteed and what is not.
 
 ### 1. Block state lives only in the main process
 
-- The canonical block state — protection mode, the block list, and lock/unlock
-  metadata — exists **only** in the Electron main process and is persisted to an
-  **encrypted store** (`guardrail.dat`, AES-256-GCM, key in `auren.key`). Both
-  files are chmod 0600 (owner read/write only), enforced and repaired at every
-  app start.
+- The canonical block state — protection mode, the site block list, the **app
+  block list**, and lock/unlock metadata — exists **only** in the Electron main
+  process and is persisted to an **encrypted store** (`guardrail.dat`,
+  AES-256-GCM, key in `auren.key`). Both files are chmod 0600 (owner read/write
+  only), enforced and repaired at every app start.
 - The renderer never reads or writes those files. It can only ask the main
   process via IPC: `state:get`, `blocklist:add/remove`, `mode:set`,
-  `guardrail:is-blocked`.
+  `guardrail:is-blocked`, `appblock:search/add/remove`.
 - The root DNS daemon is a separate process (it can't do Electron IPC), so it
   consumes a **signed read-only snapshot**: the main process writes
   `config.json` + an HMAC-SHA256 `config.sig`. The daemon verifies the
@@ -296,6 +311,37 @@ through Auren's bridge. A raw terminal session Auren can't see is covered by
 Layer 1 (the pf firewall) instead. And no layer here stops local,
 network-free code execution — that needs the agent sandboxed.
 
+## App blocking (blocked apps can't run)
+
+DNS blocking stops a site from *resolving*; it can't stop an agent from
+**running a local tool**. App blocking closes that gap: search an installed app
+by name, and while Protection Mode is ON the root daemon kills it the moment it
+starts — and re-kills it on every subsequent launch — until you remove it from
+the list or turn protection off.
+
+- **Matching is by exact executable path.** The app you search resolves to its
+  executable path (`/Applications/Discord.app/Contents/MacOS/Discord`), and the
+  daemon only matches that exact path — it never substring-matches, so blocking
+  `Discord` never touches `Discord Web` or anything with a similar name. The
+  daemon also matches *argv tokens*: a launcher script that execs a blocked app
+  (`node run-discord.js`) still matches, because the app path appears as an
+  argument. Matches are exact token comparisons, never `includes()`.
+- **The daemon kills, and keeps killing.** Enforcement lives in the root
+  daemon (so an app can't kill the enforcer back), scans processes every second,
+  and is tied to the same Protection switch as DNS + firewall blocking. If the
+  daemon can't verify its config, app blocking fails closed with everything else.
+- **Safety floor:** the daemon refuses to add an entry whose path is its own
+  interpreter or the daemon binary itself — a config that tries to point the
+  kill-loop at Auren is rejected outright.
+- **What it isn't:** a sandbox. A blocked app can flash up for ~1 s before it's
+  killed; a blocked binary that is renamed/relocated after being added stops
+  matching; and a *different* executable that isn't on the list runs freely. It
+  also only blocks at launch — if the app is *already* running when you add it,
+  the daemon kills it too on its next sweep.
+- **Who sees it:** the block list lives in the same canonical encrypted store as
+  sites (see Storage above) and the UI shows it in the **Apps** card alongside
+  the sites card, with a stat tile for how many processes were killed.
+
 ## Why the biometric gate exists
 
 Turning protection **on** is instant and frictionless — a user (or an agent)
@@ -313,6 +359,44 @@ receives a **pass/fail result**. It never sees, stores, or transmits any
 biometric or credential data. Nothing you type into the macOS password dialog
 ever passes through Auren's process. This is stated in the code comments in
 `src/platform/biometrics.js` as well.
+
+## Keystroke shielding (part of Protection Mode)
+
+While **Protection Mode is ON**, Auren also hides *your* keystrokes so a
+screen-watching or keystroke-reading AI agent can't capture a password you type
+into Auren. There is no separate toggle — it is simply what Protection Mode
+means, and it engages the moment protection turns on:
+
+- **The window can't be screen-captured.** Auren's window is excluded from
+  screen recordings and captures (`setContentProtection`), so a computer-use
+  agent taking screenshots sees nothing that happens in Auren — including
+  anything you type there.
+- **Keystrokes can't be intercepted.** While Auren's window has keyboard focus,
+  macOS **Secure Event Input** is enabled, so keyboard-interception processes
+  (Accessibility / event-tap keyloggers) can't read the keys you press in
+  Auren. The moment focus leaves Auren, it's disabled again, so other apps'
+  keyboard-observing features (password managers, text expanders, logitech
+  software) keep working normally.
+- **Sensitive fields render masked.** Any input that can carry a secret
+  (`type="password"` or a `shield-masked` field) renders as dots, so even a
+  capture that ignores window content protection sees nothing readable. The
+  block-list box is *not* masked — a domain name isn't a secret.
+- **Visible, not hidden.** A **"Keystrokes hidden"** badge appears in the
+  header whenever the shield is active, and onboarding tells you it exists.
+
+**Honest limits** (see also [What this does NOT do yet](#what-this-does-not-do-yet)):
+
+- **Auren only shields its own window.** Keystrokes you type in *other* apps —
+  your browser, your password manager, your terminal — are outside Auren's
+  reach. An AI agent with Screen Recording or Accessibility permission could
+  still see those; for passwords elsewhere, use the macOS Secure Entry that
+  apps like Safari and password managers already enable on their secret fields.
+- **The macOS passcode dialog is already shielded.** When you turn protection
+  off (or quit while protected), the passcode prompt is a native macOS dialog
+  that enables Secure Event Input itself — nothing you type there is readable
+  by keystroke-interception processes.
+- **It is cooperative, not adversarial.** As with every Auren layer, an agent
+  with root-level OS access can bypass it.
 
 ## Requirements
 
@@ -370,6 +454,7 @@ src/
     domains.js            domain normalization + exact/subdomain matching
     config.js             config.json read/write (atomic) + HMAC signing, shared
     store.js              encrypted at-rest store (AES-256-GCM) for block state
+    apps.js               app block entries: validate, normalize, ps matching
     sensitive.js          outgoing form-data classifier (PII / credentials)
     commands.js           OS/terminal command classifier (ssh, ping, 443 tunnels, exfil, ...)
     policy.js             decision layer over classifier signals (block / auth-gate)
@@ -381,13 +466,15 @@ src/
     cache.js              flushes macOS DNS caches on mode/block-list changes
     pf.js                 macOS pf firewall anchor rules (block ping/ssh/DoH/...)
     daemon.js             root service: verifies config signature, fails closed,
-                          writes heartbeat, reconciles DNS + pf, runs the resolver
+                          writes heartbeat, reconciles DNS + pf + apps, runs the resolver
   platform/
     biometrics.js         macOS Touch ID / passcode gate (OS-native, pass/fail)
     dns-controller.js     daemon install + enforcement-status checks
+    app-resolver.js       installed-app search (LaunchServices + Info.plist)
 scripts/
   install-daemon.sh       install the root daemon from the CLI
   e2e-check.sh            real end-to-end verification (blocked vs. allowed)
+  e2e-apps-check.sh       real end-to-end app-block verification (needs Protection ON)
 test/
   unit.test.js            core + store + signing + policy, no privileges
   sensitive.test.js       classifier samples (false positives / negatives)
@@ -397,13 +484,14 @@ test/
 Persistence lives in three small places:
 
 - `~/Library/Application Support/Auren/guardrail.dat` — the **canonical**,
-  encrypted block state (`mode`, `blocklist`, lock/unlock metadata). Only the
-  main process reads or writes it.
+  encrypted block state (`mode`, `blocklist`, `appBlocklist`, lock/unlock
+  metadata). Only the main process reads or writes it.
 - `~/Library/Application Support/Auren/config.json` + `config.sig` — a
   **signed snapshot** exported by the app for the root daemon, which verifies
   the signature on every poll and fails closed (deny-all) if it doesn't check
   out. The daemon treats this file as untrusted input. It carries protection
-  mode, the block list, the terminal-block toggle, and the firewall allowlist.
+  mode, the site block list, the app block list, the terminal-block toggle,
+  and the firewall allowlist.
 - `~/Library/Application Support/Auren/activity.jsonl` — the plain-language log.
 
 `/Library/LaunchDaemons/com.auren.guardrail.plist` and `/usr/local/lib/auren/`
@@ -419,6 +507,9 @@ sudo rm -rf /usr/local/lib/auren "/Library/Application Support/Auren"
 
 - **Protection Mode** — one prominent toggle. ON is instant; OFF requires
   Touch ID or your device password, and logs the outcome.
+- **Keystroke shield badge** — while protection is on, a "Keystrokes hidden"
+  badge shows in the header: the window can't be screen-captured, and
+  keystrokes typed into Auren are hidden from keystroke-reading agents.
 - **Sites your AI agent can't visit** — a plain text field ("bank.com",
   "mail.google.com") + **Block** button, and a list with a × to unblock.
   Changes apply immediately. No JSON, no regex, no "policy" language.
@@ -430,6 +521,11 @@ sudo rm -rf /usr/local/lib/auren "/Library/Application Support/Auren"
   **OS commands blocked** stat and plain-language activity lines
   ("OS-level terminal access blocked (firewall rules applied) · …",
   "Agent command blocked (cmd_ssh) · …") report when they fire.
+- **Apps** — a card next to sites: search an installed app by name, pick a
+  match, and it lands on the app block list (each entry shows its executable
+  path, with a × to unblock). While Protection is on, the daemon kills blocked
+  apps at launch. A **Processes killed** stat and activity lines
+  ("Blocked: app Discord started · …") report each kill.
 
 Every Protection Mode change and every block is written to the activity log
 with a timestamp and outcome, so there's a local audit trail of *who turned
@@ -446,13 +542,16 @@ protection off and when* — without ever logging credentials or biometrics.
 ## Running the tests
 
 ```bash
-npm run test:unit        # 54 assertions: domains, config, signing, store, policy, pf rules (incl. DoH + safety floor), activity, quit gate
+npm run test:unit        # 63 assertions: domains, config, signing, store, policy, pf rules (incl. DoH + safety floor), activity, app blocking, keystroke shield, quit gate
 npm run test:classifier  # 29 assertions: form-data + OS-command classifiers (incl. tunnel-on-443)
-npm run test:dns         # 14 assertions: real resolver + daemon with dig, no privileges
+npm run test:dns         # 16 assertions: real resolver + daemon (incl. app kills) with dig, no privileges
 npm test                 # unit + classifier
 npm run test:all         # everything
 npm run e2e:check        # REAL system-wide DNS check (daemon installed + Protection ON):
                          #   blocked domain -> NXDOMAIN, normal domain -> resolves
+npm run e2e:apps         # REAL app-block check (daemon installed + Protection ON):
+                         #   adds a dummy app to the block list, verifies the daemon
+                         #   kills it, then removes the entry
 sudo npm run e2e:pf          # REAL OS-firewall check (Protection ON, as root):
                              #   pf anchor loaded (incl. DoH rules), ping blocked,
                              #   ssh/DoT blocked, DoH endpoint unreachable, HTTPS still ok
@@ -466,6 +565,11 @@ npm run audit:container      # Docker isolation audit (Protection ON): does cont
 blocking at the network layer with `dig`, then removes it. See
 `docs/MANUAL_TEST.md` for the full human-run checklist, including the
 biometric-gated toggle-off test.
+
+`e2e:apps` does the same for app blocking: it adds a harmless dummy "app" (an
+executable shell script) to the app block list, spawns it, confirms the daemon
+kills it within ~1 s, and removes the entry. It refuses to run unless Protection
+is ON, and it never touches a real application.
 
 ## FAQ
 
@@ -486,6 +590,19 @@ doesn't stop blocking; turn the toggle OFF (with verification) to stop it.
 Yes. Blocking `bank.com` also blocks `mail.bank.com`. But not
 `notbank.com`. Matching is exact-or-subdomain only — see `src/core/domains.js`.
 
+**If I block an app, when does it get killed?**
+Within ~1 second of it starting — the root daemon scans every second while
+Protection is ON and kills blocked apps (matching by exact executable path and
+argv tokens, never by substring). It also kills a blocked app that was already
+running when you added it. Remove the app from the list (or turn protection
+OFF) and it runs normally again.
+
+**Does app blocking survive a daemon crash?**
+No process can out-muscle a broken daemon. If the daemon itself fails, App
+Blocking pauses with DNS + firewall until the LaunchDaemon restarts it; Auren
+logs the outage. If the daemon can't verify its config, everything fails closed
+(deny-all) instead.
+
 **My VPN stopped working while protection is on.**
 VPNs sometimes force their own DNS, which can conflict with pointing DNS at
 Auren. This is a known rough edge of DNS-level blocking, not something Auren
@@ -505,6 +622,13 @@ protection turned on, so it's served from a cache rather than re-resolved.
 Auren flushes the macOS DNS cache at every mode change, which covers Safari and
 the system resolver immediately; Chrome/Firefox keep their own cache for up to
 ~a minute. Close the tab (or restart the browser) and the block is instant.
+
+**Can an AI agent see my keystrokes while protection is on?**
+Not inside Auren: while protection is on, Auren's window can't be screen-
+captured and macOS Secure Event Input stops keystroke-reading agents from
+intercepting what you type there. But this covers Auren's own window only —
+keystrokes you type in other apps (your browser, your password manager) are
+outside Auren's reach, and the OS passcode prompt is protected by macOS itself.
 
 **Is this unbypassable?**
 No — see [What this does NOT do yet](#what-this-does-not-do-yet). It's a

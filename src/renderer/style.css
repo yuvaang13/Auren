@@ -120,13 +120,23 @@ main {
 
 .col-stats .stat-tile { width: 100%; }
 
+/* Stats sit in column 1; sites + apps stack in column 2; activity spans
+ * both rows in column 3 so the middle column balances the two cards. */
+.col-stats { grid-column: 1; grid-row: 1 / span 2; }
+.sites-card { grid-column: 2; }
+.apps-card { grid-column: 2; }
+.activity-card { grid-column: 3; grid-row: 1 / span 2; }
+
 @media (max-width: 1040px) {
   .layout { grid-template-columns: 250px minmax(0, 1fr); }
-  .activity-card { grid-column: 1 / -1; }
+  .col-stats { grid-column: 1; grid-row: 1 / span 2; }
+  .sites-card, .apps-card { grid-column: 2; }
+  .activity-card { grid-column: 1 / -1; grid-row: auto; }
 }
 
 @media (max-width: 700px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
+  .col-stats, .sites-card, .apps-card, .activity-card { grid-column: auto; grid-row: auto; }
   .activity-card { grid-column: auto; }
 }
 
@@ -218,7 +228,8 @@ main {
   animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .sites-card { animation-delay: 0.05s; }
-.activity-card { animation-delay: 0.1s; }
+.apps-card { animation-delay: 0.1s; }
+.activity-card { animation-delay: 0.15s; }
 
 .card-head {
   display: flex;
@@ -382,6 +393,36 @@ main {
   animation: pulse 2s ease-in-out infinite;
 }
 
+/* Keystroke shield — shown whenever Protection is on */
+.shield-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  background: rgba(52, 211, 153, 0.07);
+  padding: 2px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.shield-badge .shield-key-icon {
+  width: 11px; height: 11px;
+  flex: none;
+  color: var(--accent);
+}
+
+/* While the shield is on, any sensitive input renders as dots so even a
+ * capture that ignores window content protection sees nothing readable.
+ * Only fields marked `shield-masked` (i.e. fields that can carry secrets)
+ * are masked — plain text fields like the domain box are not. */
+body.keystroke-shield .shield-masked {
+  -webkit-text-security: disc;
+}
+
 /* Toggle switch */
 .switch { position: relative; display: inline-block; width: 64px; height: 36px; flex: none; }
 .switch input { opacity: 0; width: 0; height: 0; }
@@ -452,6 +493,7 @@ main {
 .col-stats .stat-tile:nth-child(2) { animation-delay: 0.05s; }
 .col-stats .stat-tile:nth-child(3) { animation-delay: 0.1s; }
 .col-stats .stat-tile:nth-child(4) { animation-delay: 0.15s; }
+.col-stats .stat-tile:nth-child(5) { animation-delay: 0.2s; }
 
 .stat-label {
   font-size: 12px;
@@ -503,6 +545,7 @@ button.primary:active { transform: translateY(1px); }
   display: flex;
   align-items: center;
 }
+.apps-card .input-wrap { width: 100%; }
 .input-wrap .input-icon {
   position: absolute;
   left: 14px;
@@ -513,7 +556,8 @@ button.primary:active { transform: translateY(1px); }
 }
 .input-wrap:focus-within .input-icon { color: var(--accent); }
 
-#domain-input {
+#domain-input,
+#app-search-input {
   flex: 1;
   min-width: 0;
   width: 100%;
@@ -526,12 +570,51 @@ button.primary:active { transform: translateY(1px); }
   border-radius: var(--radius-sm);
   transition: border-color 0.2s ease, background 0.2s ease;
 }
-#domain-input::placeholder { color: var(--ink-3); }
-#domain-input:focus {
+#domain-input::placeholder,
+#app-search-input::placeholder { color: var(--ink-3); }
+#domain-input:focus,
+#app-search-input:focus {
   outline: none;
   border-color: var(--accent);
   background: #171a20;
 }
+
+/* App search results — pick a match to block the app */
+.app-matches {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.app-match {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13.5px;
+}
+.app-match:hover { background: var(--accent-soft); }
+.app-match-name {
+  color: var(--ink);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-match-id {
+  flex: none;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.app-match.empty-match { cursor: default; color: var(--ink-3); font-style: italic; }
 
 .block-list { list-style: none; margin: 16px 0 0; padding: 0; }
 
@@ -558,6 +641,17 @@ button.primary:active { transform: translateY(1px); }
   font-size: 14px;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-name-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.app-name-wrap .domain { font-family: var(--font); font-weight: 600; font-size: 14px; }
+.app-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -620,6 +714,8 @@ button.primary:active { transform: translateY(1px); }
 .activity-item.kind-block .activity-marker { background: var(--danger); }
 .activity-item.kind-toggle .activity-marker { background: var(--accent); }
 .activity-item.kind-agent .activity-marker { background: var(--warning); }
+.activity-item.kind-app .activity-marker { background: var(--danger); }
+.activity-item.kind-command .activity-marker { background: var(--warning); }
 
 .activity-text {
   flex: 1;
@@ -642,6 +738,8 @@ button.primary:active { transform: translateY(1px); }
 .activity-item.kind-block .kind-tag { color: var(--danger); border-color: rgba(239, 107, 107, 0.3); }
 .activity-item.kind-toggle .kind-tag { color: var(--accent); border-color: rgba(52, 211, 153, 0.3); }
 .activity-item.kind-agent .kind-tag { color: var(--warning); border-color: rgba(228, 180, 77, 0.3); }
+.activity-item.kind-app .kind-tag { color: var(--danger); border-color: rgba(239, 107, 107, 0.3); }
+.activity-item.kind-command .kind-tag { color: var(--warning); border-color: rgba(228, 180, 77, 0.3); }
 
 .footer-note {
   color: var(--ink-3);
