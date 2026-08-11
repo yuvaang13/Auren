@@ -69,13 +69,21 @@ const PF_ENABLED = String(process.env.AUREN_PF_ENABLED || '1') !== '0';
 const PF_RULES = process.env.AUREN_PF_RULES || path.join(__dirname, 'pf.rules');
 const APPS_ENABLED = String(process.env.AUREN_APPS_ENABLED || '1') !== '0';
 
-const POLL_MS = 800;
+// Fast tick. The dominant cost per tick is the ps app-block scan (~35 ms);
+// all subprocess-heavy DNS/firewall work is deferred until the config changes
+// or a slow self-heal sweep comes due, so 200 ms is cheap. The old 800 ms
+// poll meant a site block / mode toggle / app kill took up to 800 ms to apply.
+const POLL_MS = 200;
+// Self-heal cadence for the network layer: re-points DNS at the resolver (or
+// restores it) when the outside world drifted — a new Wi-Fi network, a NIC
+// that changed, a takeover that failed — independent of config changes.
+const NETWORK_SWEEP_MS = 2000;
 const LOG_THROTTLE_MS = 5000;
 const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 11;
+const DAEMON_VERSION = 12;
 
 let mode = 'off';
 let blocklist = [];
@@ -83,6 +91,11 @@ let appBlocklist = [];
 let resolver = null;
 let upstreamApplied = false;
 let state = { services: {}, applied: false };
+let reconciling = false;
+let lastCfgMtime = null;
+let lastFailClosed = false;
+let lastNetworkRun = 0;
+let networkFailed = false;
 
 // OS/terminal-level network blocking (pf anchor), tied to Protection Mode.
 let terminalBlock = true;
@@ -188,12 +201,20 @@ function loadState() {
   if (!state || typeof state !== 'object' || !state.services) state = { services: {}, applied: false };
 }
 
+// Cheap config-change probe (~0.02 ms, no subprocess): the desktop app writes
+// config.json only when something actually changed, so an mtime diff means a
+// full reconcile is due. Returns null if the file is missing/unreadable.
+function statCfgMtime() {
+  try { return fs.statSync(CONFIG).mtimeMs; } catch { return null; }
+}
+
 /* --------------------------- DNS takeover --------------------------- */
 
 function applyDns() {
-  if (!DNS_ENABLED || !resolver || !resolver.running) return false;
+  if (!DNS_ENABLED || !resolver || !resolver.running) return { changed: false, failed: false };
   loadState();
   let changed = false;
+  let failed = false;
   for (const service of listServices()) {
     const current = getServers(service);
     const isOurs = current.length === 1 && current[0] === '127.0.0.1';
@@ -202,7 +223,10 @@ function applyDns() {
       state.services[service] = current;
     }
     if (setServers(service, ['127.0.0.1'])) changed = true;
-    else log('error', 'could not set DNS on service: ' + service);
+    else {
+      failed = true;
+      log('error', 'could not set DNS on service: ' + service);
+    }
   }
   if (changed) {
     state.applied = true;
@@ -210,13 +234,14 @@ function applyDns() {
     logActivity(makeEntry('daemon', 'dns_applied'));
     log('info', 'DNS pointed at 127.0.0.1 (protection on)');
   }
-  return changed;
+  return { changed, failed };
 }
 
 function restoreDns() {
-  if (!DNS_ENABLED) return false;
+  if (!DNS_ENABLED) return { changed: false, failed: false };
   loadState();
   let changed = false;
+  let failed = false;
   for (const service of listServices()) {
     const current = getServers(service);
     if (!current.includes('127.0.0.1')) {
@@ -226,8 +251,10 @@ function restoreDns() {
     const original = state.services[service];
     if (original && original.length) {
       if (setServers(service, original)) changed = true;
+      else failed = true;
     } else {
       if (setServers(service, [])) changed = true;
+      else failed = true;
     }
     delete state.services[service];
   }
@@ -237,7 +264,7 @@ function restoreDns() {
     logActivity(makeEntry('daemon', 'dns_restored'));
     log('info', 'DNS restored (protection off)');
   }
-  return changed;
+  return { changed, failed };
 }
 
 function discoverUpstream() {
@@ -350,7 +377,21 @@ function flushCache() {
 
 let resolverDownReported = false;
 
+// Polled entry point. Runs the full reconcile but never lets iterations
+// overlap: setInterval fires on a fixed cadence regardless of how long the
+// previous run took, and a slow networksetup/spawnSync iteration must not
+// overlap the next one or subprocesses pile up.
 async function reconcile() {
+  if (reconciling) return;
+  reconciling = true;
+  try {
+    await reconcileInner();
+  } finally {
+    reconciling = false;
+  }
+}
+
+async function reconcileInner() {
   // Liveness first: stamp a heartbeat BEFORE any blocking work (networksetup,
   // scutil, DNS-cache flush) so the desktop app's watchdog never reads a stale
   // file just because a slow reconcile iteration is still running. The 2s
@@ -456,17 +497,45 @@ async function reconcile() {
     }
   }
 
-  if (resolver && resolver.running && (mode === 'on' || failClosed)) {
-    const upstream = discoverUpstream();
-    if (!upstreamApplied || JSON.stringify(upstream) !== JSON.stringify(resolver.upstreamServers)) {
-      resolver.setUpstream(upstream);
-      upstreamApplied = true;
+  // Cheap change detection (no subprocesses): the app writes config.json only
+  // when something actually changed, so an mtime diff means a reconcile is due.
+  // A missing config is treated as a change on the transition (the read above
+  // already flipped us to fail-closed); updating lastCfgMtime either way stops
+  // a vanished file from re-triggering a full reconcile on every tick.
+  const cfgMtime = statCfgMtime();
+  const cfgChanged = cfgMtime !== lastCfgMtime;
+  lastCfgMtime = cfgMtime;
+
+  // The subprocess-heavy DNS/firewall work (networksetup, scutil) runs only
+  // when it can actually matter: the config changed, we entered/left
+  // fail-closed, a self-heal sweep is due (external drift, e.g. a new Wi-Fi
+  // network or a NIC that changed), or the last attempt failed. Everything else
+  // on this path — the ps app scan, cache flush, pf — is cheap or already gated
+  // on change, so POLL_MS can stay low without stalling blocking.
+  const now = Date.now();
+  const failClosedChanged = failClosed !== lastFailClosed;
+  lastFailClosed = failClosed;
+  const networkDue = cfgChanged || failClosedChanged || networkFailed || now - lastNetworkRun >= NETWORK_SWEEP_MS;
+
+  let dnsChanged = false;
+  if (networkDue) {
+    lastNetworkRun = now;
+    networkFailed = false;
+    if (resolver && resolver.running && (mode === 'on' || failClosed)) {
+      const upstream = discoverUpstream();
+      if (!upstreamApplied || JSON.stringify(upstream) !== JSON.stringify(resolver.upstreamServers)) {
+        resolver.setUpstream(upstream);
+        upstreamApplied = true;
+      }
     }
+
+    // Fail-closed means DNS stays pointed at us and we deny everything, even
+    // if a tampered config claims mode is OFF.
+    const res = (mode === 'on' || failClosed) ? applyDns() : restoreDns();
+    dnsChanged = res.changed;
+    networkFailed = res.failed;
   }
 
-  // Fail-closed means DNS stays pointed at us and we deny everything, even if
-  // a tampered config claims mode is OFF.
-  const dnsChanged = (mode === 'on' || failClosed) ? applyDns() : restoreDns();
   const modeChanged = mode !== lastMode;
   const blocklistChanged = JSON.stringify(blocklist) !== lastBlocklistJson;
   lastMode = mode;
