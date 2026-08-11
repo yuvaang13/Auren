@@ -24,7 +24,7 @@ const DAEMON_LIB = '/usr/local/lib/auren';
 // app compares the installed daemon's version against this and re-runs the
 // installer when they disagree, so a running launchd job never silently keeps
 // old behavior after an app update. Keep in sync with daemon.js DAEMON_VERSION.
-const DAEMON_VERSION = 10;
+const DAEMON_VERSION = 11;
 
 function isDaemonInstalled() {
   return fs.existsSync(PLIST);
@@ -153,6 +153,11 @@ function buildInstallerScript(opts) {
     'PLIST',
     'exec >> "$SPOOL/install.log" 2>&1',
     'echo "=== auren installer $(/bin/date -u +%FT%TZ) pid $$ ==="',
+    // grep lives at /usr/bin/grep on modern macOS and /bin/grep on older ones.
+    // Resolve it before the heartbeat-wait below, so a wrong path can't make a
+    // successful install look like a failed one (a 15s timeout + AUREN_INSTALL_FAILED).
+    'GREP=/usr/bin/grep',
+    '[ -x /bin/grep ] && GREP=/bin/grep',
     'HB=' + shellQuote(hb),
     'OLD_M=0',
     'if [ -f "$HB" ]; then OLD_M=$(/usr/bin/stat -f %m "$HB" 2>/dev/null || echo 0); fi',
@@ -182,7 +187,7 @@ function buildInstallerScript(opts) {
     // real setup failure instead of a false "installed".
     'i=0',
     'while [ "$i" -lt 15 ]; do',
-    '  if [ -f "$HB" ] && [ "$(/usr/bin/stat -f %m "$HB" 2>/dev/null || echo 0)" -gt "$OLD_M" ] && /bin/grep -q ' + JSON.stringify('"version":' + DAEMON_VERSION + '[,}]') + ' "$HB"; then',
+    '  if [ -f "$HB" ] && [ "$(/usr/bin/stat -f %m "$HB" 2>/dev/null || echo 0)" -gt "$OLD_M" ] && $GREP -q ' + JSON.stringify('"version":' + DAEMON_VERSION + '[,}]') + ' "$HB"; then',
     '    echo AUREN_INSTALL_OK',
     '    exit 0',
     '  fi',

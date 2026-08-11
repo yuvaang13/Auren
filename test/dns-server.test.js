@@ -16,7 +16,7 @@ const { spawn, execFile } = require('child_process');
 
 const dnsMsg = require('../src/dns/dns-message');
 const { DnsResolver } = require('../src/dns/resolver');
-const { flushDnsCache, flushDnsCacheAsync } = require('../src/dns/cache');
+const { flushDnsCache, flushDnsCacheAsync, FLUSH_COMMANDS } = require('../src/dns/cache');
 const { domainMatches } = require('../src/core/domains');
 const config = require('../src/core/config');
 
@@ -266,12 +266,13 @@ async function daemonTest() {
     const res = flushDnsCache({
       execFileSync: (cmd, args) => { calls.push({ cmd, args }); return Buffer.alloc(0); }
     });
-    assert.deepStrictEqual(calls, [
-      { cmd: '/usr/sbin/dscacheutil', args: ['-flushcache'] },
-      { cmd: '/bin/killall', args: ['-HUP', 'mDNSResponder'] }
-    ]);
+    assert.deepStrictEqual(calls, FLUSH_COMMANDS.map(([cmd, args]) => ({ cmd, args })));
     assert.strictEqual(res.flushed, true);
     assert.deepStrictEqual(res.errors, []);
+    assert.ok(FLUSH_COMMANDS.length >= 2, 'both cache tools resolved');
+    for (const [cmd] of FLUSH_COMMANDS) {
+      assert.ok(fs.existsSync(cmd), 'cache tool resolves to a real path: ' + cmd);
+    }
   });
 
   await test('cache: flushDnsCache swallows failures and reports them', async () => {
@@ -294,10 +295,7 @@ async function daemonTest() {
         resolve();
       });
     });
-    assert.deepStrictEqual(calls, [
-      { cmd: '/usr/sbin/dscacheutil', args: ['-flushcache'] },
-      { cmd: '/bin/killall', args: ['-HUP', 'mDNSResponder'] }
-    ]);
+    assert.deepStrictEqual(calls, FLUSH_COMMANDS.map(([cmd, args]) => ({ cmd, args })));
   });
 
   await test('cache: flushDnsCacheAsync swallows failures and reports them', async () => {

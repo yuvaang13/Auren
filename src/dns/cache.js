@@ -17,14 +17,27 @@
  */
 
 'use strict';
+const fs = require('fs');
 const { execFile, execFileSync } = require('child_process');
+
+// macOS consolidated its command-line tools into /usr/bin; older systems keep
+// the classic /bin and /usr/sbin copies (often as symlinks). Resolve each tool
+// to the first path that actually exists at load time, so the root daemon can
+// spawn it on any modern macOS instead of failing with ENOENT when a binary
+// lives somewhere else than the classic layout.
+function resolveExecutable(candidates) {
+  for (const p of candidates) {
+    try { fs.accessSync(p, fs.constants.X_OK); return p; } catch { /* try next */ }
+  }
+  return candidates[0];
+}
 
 // Order matters: flush first, then poke mDNSResponder so it drops its in-memory
 // positive and negative cache entries. Failures are non-fatal — worst case the
 // cache survives and blocking still applies to genuinely new lookups.
 const FLUSH_COMMANDS = [
-  ['/usr/sbin/dscacheutil', ['-flushcache']],
-  ['/bin/killall', ['-HUP', 'mDNSResponder']]
+  [resolveExecutable(['/usr/bin/dscacheutil', '/usr/sbin/dscacheutil']), ['-flushcache']],
+  [resolveExecutable(['/usr/bin/killall', '/bin/killall']), ['-HUP', 'mDNSResponder']]
 ];
 
 function describeError(cmd, err) {
@@ -65,4 +78,4 @@ function flushDnsCacheAsync(opts, cb) {
   }
 }
 
-module.exports = { flushDnsCache, flushDnsCacheAsync };
+module.exports = { flushDnsCache, flushDnsCacheAsync, FLUSH_COMMANDS };

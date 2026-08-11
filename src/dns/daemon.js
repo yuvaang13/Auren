@@ -75,7 +75,7 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 10;
+const DAEMON_VERSION = 11;
 
 let mode = 'off';
 let blocklist = [];
