@@ -31,17 +31,17 @@
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const crypto = require('crypto');
 const { app, BrowserWindow, ipcMain, Menu, nativeTheme, nativeImage, Notification } = require('electron');
 
 const config = require('./core/config');
 const activity = require('./core/activity');
 const store = require('./core/store');
-const sensitive = require('./core/sensitive');
-const commands = require('./core/commands');
-const policy = require('./core/policy');
+const agentgate = require('./core/agentgate');
 const pf = require('./dns/pf');
 const virt = require('./core/virt');
-const { normalizeDomain, domainMatches, validateBlockDomain } = require('./core/domains');
+const httpBridge = require('./bridge/http');
+const { normalizeDomain, validateBlockDomain } = require('./core/domains');
 const { normalizeAppBlocklist, validateBlockApp } = require('./core/apps');
 const { quitRequiresAuth } = require('./core/quit');
 const dnsController = require('./platform/dns-controller');
@@ -58,6 +58,7 @@ const STATE_FILE = '/Library/Application Support/Auren/state.json';
 const KEY_FILE = path.join(USER_DATA, store.KEY_FILE);
 const STORE_FILE = path.join(USER_DATA, store.STORE_FILE);
 const HEARTBEAT_FILE = '/Library/Application Support/Auren/heartbeat.json';
+const BRIDGE_TOKEN_FILE = path.join(USER_DATA, 'bridge.token');
 
 app.setName('auren');
 app.setPath('userData', USER_DATA);
@@ -102,6 +103,10 @@ let storeIntegrityKey = null;
 // True when enforcement can't be trusted (daemon silent, tampered/corrupt
 // store, unverified config). Every gated surface refuses while this is set.
 let degraded = false;
+
+// State of the loopback agent bridge (src/bridge/http.js). Surfaced in the UI
+// state so the dashboard can show where agents hook in.
+let bridgeInfo = { running: false, port: null, tokenFile: null };
 
 // Watchdog parameters: daemon heartbeats every 2s; the stale threshold below
 // trips after roughly two missed beats.
@@ -236,6 +241,93 @@ function commandPolicyFromSettings() {
   return (p && typeof p === 'object') ? p : undefined;
 }
 
+// The loopback agent bridge (HTTP API for agent frameworks) is ON by default.
+// settings.json can disable it (agentBridge: false) or pick a fixed port
+// (agentBridgePort) — e.g. { "agentBridge": false }. Read at startup.
+function bridgeEnabled() {
+  return readSettings().agentBridge !== false;
+}
+
+function bridgePort() {
+  const p = Number(readSettings().agentBridgePort);
+  return Number.isInteger(p) && p > 0 && p <= 65535 ? p : undefined;
+}
+
+// Per-machine bearer token for the bridge, persisted owner-only. Any local
+// process that can read the file can ask Auren for a decision — bounded and
+// documented (read/gate-only surface, no writes exposed).
+function loadBridgeToken() {
+  try {
+    const existing = fs.existsSync(BRIDGE_TOKEN_FILE) ? fs.readFileSync(BRIDGE_TOKEN_FILE, 'utf8').trim() : '';
+    if (existing) return existing;
+    const t = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(BRIDGE_TOKEN_FILE, t + '\n', { mode: 0o600 });
+    fs.chmodSync(BRIDGE_TOKEN_FILE, 0o600);
+    return t;
+  } catch (err) {
+    logActivity(activity.makeEntry('bridge', 'token_failed', null, 'could not read/write bridge token: ' + err.message));
+    return '';
+  }
+}
+
+// The one ctx shared by the IPC gates and the HTTP bridge, so a decision made
+// over either surface is identical. Only the auth checkpoint and activity log
+// differ between surfaces — both live in this process by design.
+function agentGateCtx() {
+  return {
+    mode: blockState.mode,
+    degraded: degraded,
+    failClosed: blockState.failClosed,
+    sensitiveRules: policyRulesFromSettings(),
+    commandRules: commandPolicyFromSettings(),
+    blocklist: blockState.blocklist,
+    authFn: (reason) => requireNativeAuth(reason),
+    logFn: logActivity,
+    notifyFn: pushState
+  };
+}
+
+// Start the loopback agent bridge. Best-effort: a bind failure (port in use,
+// etc.) is logged and surfaced in the UI, never fatal.
+async function startAgentBridge() {
+  if (!bridgeEnabled()) {
+    logActivity(activity.makeEntry('bridge', 'disabled', null, 'agent bridge disabled by settings.json'));
+    return;
+  }
+  try {
+    const res = await httpBridge.start({
+      port: bridgePort() || httpBridge.DEFAULT_PORT,
+      token: loadBridgeToken(),
+      handlers: {
+        getStatus: () => ({
+          app: 'auren',
+          version: require('../package.json').version,
+          mode: blockState.mode,
+          degraded: degraded || blockState.failClosed,
+          bridge: { running: true, port: httpBridge.status().port, tokenFile: BRIDGE_TOKEN_FILE }
+        }),
+        checkAction: (payload) => agentgate.inspectAction(payload, agentGateCtx()),
+        checkCommand: (cmd) => agentgate.inspectCommand(cmd, agentGateCtx()),
+        isBlocked: (domain) => agentgate.isBlocked(domain, agentGateCtx())
+      }
+    });
+    bridgeInfo = { running: true, port: res.port, tokenFile: BRIDGE_TOKEN_FILE };
+    logActivity(activity.makeEntry('bridge', 'started', null, 'agent bridge listening on 127.0.0.1:' + res.port));
+  } catch (err) {
+    bridgeInfo = { running: false, port: null, tokenFile: BRIDGE_TOKEN_FILE };
+    logActivity(activity.makeEntry('bridge', 'start_failed', null, 'agent bridge could not listen: ' + err.message));
+  }
+  pushState();
+}
+
+async function stopAgentBridge() {
+  try { await httpBridge.stop(); } catch { /* best-effort */ }
+  if (bridgeInfo.running) {
+    bridgeInfo = { running: false, port: null, tokenFile: null };
+    logActivity(activity.makeEntry('bridge', 'stopped', null, 'agent bridge stopped'));
+  }
+}
+
 // Terminal/OS-level blocking is tied to Protection Mode and ON by default.
 // A user can add an allowlist via settings.json — the same tunable-policy
 // convention as sensitivePolicy. The daemon only ever trusts the signed config,
@@ -315,7 +407,7 @@ function normalizeLoadedState(loaded) {
 // files that were loosened and had to be fixed.
 function enforceStoragePermissions() {
   const fixed = [];
-  for (const f of [STORE_FILE, KEY_FILE, CONFIG_FILE, CONFIG_FILE + '.sig', SETTINGS_FILE, SETTINGS_SIG_FILE]) {
+  for (const f of [STORE_FILE, KEY_FILE, CONFIG_FILE, CONFIG_FILE + '.sig', SETTINGS_FILE, SETTINGS_SIG_FILE, BRIDGE_TOKEN_FILE]) {
     if (fs.existsSync(f) && store.ensurePermissions(f)) fixed.push(path.basename(f));
   }
   for (const name of fixed) logActivity(activity.makeEntry('daemon', 'permissions_fixed', null, name + ' permissions tightened to 0600'));
@@ -426,6 +518,7 @@ function getState() {
     vmsDetected: virt.runningVirtualization(),
     settingsTampered: settingsTampered,
     keystrokeShield: shield.keystrokeShieldActive(blockState),
+    agentBridge: bridgeInfo,
     lock: blockState.lock
   };
 }
@@ -653,91 +746,25 @@ ipcMain.handle('appblock:remove', (_e, id) => {
 });
 
 // Read-only query for any component that needs to know whether a site is
-// blocked: the renderer, a future browser-bridge, native-messaging host, etc.
-// While degraded, everything is reported as blocked (fail-closed).
-ipcMain.handle('guardrail:is-blocked', (_e, domain) => {
-  if (degraded || blockState.failClosed) return true;
-  if (blockState.mode !== 'on') return false;
-  const d = normalizeDomain(domain);
-  return blockState.blocklist.some((x) => domainMatches(d, x));
-});
+// blocked: the renderer, the loopback agent bridge, a future browser-bridge or
+// native-messaging host, etc. While degraded, everything is reported as
+// blocked (fail-closed).
+ipcMain.handle('guardrail:is-blocked', (_e, domain) => agentgate.isBlocked(domain, agentGateCtx()));
 
 // Policy-gated checkpoint for outgoing agent actions (form submissions etc.).
-// classifier -> policy -> native auth, fully inside the main process.
-ipcMain.handle('agent:inspect-action', async (_e, payload) => {
-  const signal = sensitive.classifySensitivePayload(payload);
-  // Fail-closed while degraded OR while the encrypted store is unverified.
-  const decision = policy.decidePolicy(signal, { degraded: degraded || blockState.failClosed, rules: policyRulesFromSettings() });
-
-  let allowed = false;
-  let outcome;
-  if (decision.action === 'allow') {
-    allowed = true;
-    outcome = 'allowed';
-  } else if (decision.action === 'log') {
-    allowed = true;
-    outcome = 'logged';
-  } else if (decision.action === 'block') {
-    outcome = 'blocked';
-  } else {
-    // require_auth
-    const typesLabel = signal.types.join(', ') || 'sensitive data';
-    const reason = 'Approve sending ' + typesLabel + (payload && payload.url ? ' to ' + payload.url : '');
-    const ok = await requireNativeAuth(reason);
-    if (ok) { allowed = true; outcome = 'allowed'; }
-    else outcome = 'blocked';
-  }
-
-  const note = 'types=' + (signal.types.join(',') || 'none');
-  logActivity(activity.makeEntry('agent', outcome, null, note));
-  pushState();
-  return { allowed, action: decision.action, types: signal.types, reason: decision.reason };
-});
+// classifier -> policy -> native auth, fully inside the main process. The
+// decision logic lives in core/agentgate.js and is shared with the HTTP bridge.
+ipcMain.handle('agent:inspect-action', async (_e, payload) => agentgate.inspectAction(payload, agentGateCtx()));
 
 // Policy-gated checkpoint for OS/terminal-level agent commands (ssh, ping,
 // curl, nc, ...). Mirrors agent:inspect-action but ties enforcement to
 // Protection Mode: when protection is OFF the gate does not stand in the way.
 // While degraded (or the encrypted store is unverified) it refuses — fail-
-// closed. Only a bridge/native host that routes commands through Auren hits
-// this gate; the pf firewall in the root daemon covers everything else.
+// closed. The loopback agent bridge routes commands through this same gate;
+// the pf firewall in the root daemon covers everything else.
 ipcMain.handle('agent:inspect-command', async (_e, payload) => {
   const cmd = (payload && payload.command != null) ? payload.command : payload;
-
-  if (degraded || blockState.failClosed) {
-    logActivity(activity.makeEntry('command', 'blocked', null, 'enforcement degraded'));
-    pushState();
-    return { allowed: false, action: 'block', types: [], reason: 'enforcement degraded' };
-  }
-  if (blockState.mode !== 'on') {
-    return { allowed: true, action: 'allow', types: [], reason: 'protection off' };
-  }
-
-  const signal = commands.classifyCommand(cmd);
-  const decision = policy.decidePolicy(signal, { degraded: false, rules: commandPolicyFromSettings() });
-
-  let allowed = false;
-  let outcome;
-  if (decision.action === 'allow') {
-    allowed = true;
-    outcome = 'allowed';
-  } else if (decision.action === 'log') {
-    allowed = true;
-    outcome = 'logged';
-  } else if (decision.action === 'block') {
-    outcome = 'blocked';
-  } else {
-    // require_auth — only reachable via a custom commandPolicy rule.
-    const typesLabel = signal.types.join(', ') || 'network access';
-    const reason = 'Approve running a network-capable command (' + typesLabel + ')';
-    const ok = await requireNativeAuth(reason);
-    if (ok) { allowed = true; outcome = 'allowed'; }
-    else outcome = 'blocked';
-  }
-
-  const note = 'types=' + (signal.types.join(',') || 'none');
-  logActivity(activity.makeEntry('command', outcome, null, note));
-  pushState();
-  return { allowed, action: decision.action, types: signal.types, reason: decision.reason };
+  return agentgate.inspectCommand(cmd, agentGateCtx());
 });
 
 ipcMain.handle('mode:set', async (_e, mode) => {
@@ -819,6 +846,7 @@ if (!gotLock) {
     createWindow();
     startPolling();
     startWatchdog();
+    startAgentBridge();
     refreshDaemonIfStale();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -843,6 +871,7 @@ if (!gotLock) {
       shieldSecureInput = false;
       try { if (typeof app.setSecureKeyboardEntryEnabled === 'function') app.setSecureKeyboardEntryEnabled(false); } catch { /* best-effort */ }
     }
+    stopAgentBridge();
     if (forceQuit || !quitRequiresAuth(blockState)) {
       liftProtectionOnQuit();
       return;

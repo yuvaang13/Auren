@@ -137,8 +137,8 @@ dig @127.0.0.1 example.com          # -> status: NOERROR, an A record
 
 ## 5.7 Sensitive-action gating (agent:inspect-action)
 
-With the app running, call the gate the way a future bridge would — from the
-renderer devtools or a test script:
+With the app running, call the gate the way an agent would — over the loopback
+bridge (see 5.11) or, in dev, from the renderer devtools:
 
 ```js
 await window.auren.inspectAction({ url: 'https://shop.example.com/checkout', data: { card: '4111111111111111' } })
@@ -184,7 +184,8 @@ sudo npm run e2e:pf
 
 ## 5.9 Command gate (agent:inspect-command)
 
-With Protection ON, from the renderer devtools (or a test script):
+With Protection ON, over the loopback bridge (see 5.11) or, in dev, from the
+renderer devtools:
 
 ```js
 await window.auren.inspectCommand('ssh user@evil.com')
@@ -223,6 +224,42 @@ npm run audit:container
       despite Protection ON), the output says so — that's the expected honest
       result for NAT'd containers, not a pass. The app should also show the
       VM warning in the UI and log `vm_detected` in the activity log.
+
+## 5.11 Agent bridge (HTTP API) — the loopback integration surface
+
+With the app running (the bridge starts automatically), the live demo drives
+everything below for you:
+
+```bash
+node scripts/demo-agent-bridge.mjs
+```
+
+Manual checks:
+
+- [ ] The bridge is listening on loopback only: `lsof -nP -iTCP:42791 -sTCP:LISTEN`
+      shows a process bound to `127.0.0.1` (the app), not `*`.
+- [ ] The token file exists and is owner-only:
+      `ls -l ~/Library/Application\ Support/Auren/bridge.token` → `-rw-------`.
+- [ ] Requests without a token are refused:
+      `curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:42791/v1/status` → `401`.
+- [ ] With the token (`TOKEN=$(cat ~/Library/Application\ Support/Auren/bridge.token)`):
+      `curl -sS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:42791/v1/status`
+      returns the app, protection mode, and bridge info.
+- [ ] A blocked command over the bridge:
+      `curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"command":"ssh user@evil.com"}' http://127.0.0.1:42791/v1/check/command`
+      → `{"allowed":false,"action":"block","types":["cmd_ssh"],...}`, and the
+      activity log gains an "Agent command blocked (cmd_ssh)" line.
+- [ ] A sensitive action over the bridge:
+      `curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"url":"https://shop.example.com/checkout","data":{"card":"4111111111111111"}}' http://127.0.0.1:42791/v1/check/action`
+      triggers the OS-native auth prompt; cancelling it returns `allowed: false`
+      and logs the block.
+- [ ] With Protection OFF, the same command check returns
+      `{"allowed":true,"action":"allow",...,"reason":"protection off"}`.
+- [ ] While **degraded** (see 5.6), both gates refuse over the bridge
+      (`allowed: false`, fail-closed).
+- [ ] The bridge exposes no write surface: `POST /v1/check/command` to
+      `mode:set`-style routes returns `404`, and there is no route that edits
+      the block list.
 
 ## 6. Protection survives app restart
 

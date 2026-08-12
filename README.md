@@ -54,12 +54,14 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
 
 ## What this does NOT do yet
 
-- **It does not intercept page content or form data on its own.** Auren now
-  ships a *classifier + auth-gating API* for outgoing form data
-  (`agent:inspect-action`, see below), but nothing in Auren currently sits in
-  the network path where form submissions happen. Wiring that API into a proxy
-  or browser bridge is the integration layer — Auren provides the detection,
-  the policy, and the native-auth gate, not the proxy itself.
+- **It does not intercept page content or form data on its own.** Auren ships a
+  loopback HTTP bridge (the **agent bridge**) so a local agent that routes its
+  actions and commands through Auren hits the gates live — form submissions
+  run through a *classifier + auth-gating checkpoint* (`agent:inspect-action`,
+  see below). But the bridge is **cooperative**: it does not sit invisibly in
+  the network path, and an agent that doesn't route through it is covered by
+  the DNS/firewall layers instead. Auren provides the detection, the policy,
+  and the native-auth gate — it is not a proxy or a browser bridge.
 - **It does not detect humans vs. AI in real time.** Protection is a manual
   on/off switch. Auren does not try to tell whether a given lookup came from
   you or from an agent.
@@ -141,11 +143,11 @@ what is guaranteed and what is not.
   `config.json` + an HMAC-SHA256 `config.sig`. The daemon verifies the
   signature before trusting a single byte and **never writes** the block state
   back. It has no independent, writable copy — its copy is derived and verified.
-- **Any component that intercepts agent traffic** (a future proxy, native
-  messaging host, or browser-bridge) must use the same main-process API —
-  `guardrail:is-blocked` to ask whether a site is blocked, and
-  `agent:inspect-action` to gate sensitive actions. No component should keep its
-  own copy of block state.
+- **Any component that intercepts agent traffic** (the shipped agent bridge, a
+  future proxy, native-messaging host, or browser-bridge) must use the same
+  main-process API — `guardrail:is-blocked` to ask whether a site is blocked,
+  and `agent:inspect-action` to gate sensitive actions. No component should keep
+  its own copy of block state.
 
 ### 2. Fail-closed tamper detection
 
@@ -254,8 +256,8 @@ layer (`src/core/policy.js`) that decides what to do about it:
   `~/Library/Application Support/Auren/settings.json`, e.g.
   `{ "sensitivePolicy": { "password": "log" } }`.
 - **The gate:** `agent:inspect-action` runs the whole chain (classify → decide →
-  authenticate → log) inside the main process. A future proxy or browser bridge
-  calls it before allowing an agent's form submission through; Auren returns
+  authenticate → log) inside the main process. The agent bridge (see below)
+  calls it before an agent's form submission goes through, and returns
   `{ allowed, action, types, reason }` and logs the outcome like a site block.
 
 ## Terminal & OS-level network access (default blocking)
@@ -307,8 +309,8 @@ names**, it closes the gap where direct-IP commands (`ssh user@1.2.3.4`,
 ### Layer 2 — a command gate for agents that run through Auren
 
 `agent:inspect-command` is the OS-command twin of `agent:inspect-action`
-(see above). A future bridge / native-messaging host that routes an agent's
-commands through Auren calls it before executing them. The classifier
+(see above). The agent bridge (see below) routes an agent's commands through it
+before executing them. The classifier
 (`src/core/commands.js`) recognizes ssh/scp/sftp/rsync sessions, ping and
 traceroute, port probes (`nc`, `telnet`, `nmap`), ssh tunnels (`-L/-R/-D`),
 tunnel-on-443 attempts (`ssh -p 443`, `stunnel`, `openssl s_client`, raw
@@ -322,9 +324,56 @@ database/cluster admin, and credential-store exfiltration pipelines
 degraded it refuses (fail-closed). Every outcome is logged like a site block.
 
 The honest boundary: Layer 2 only helps when the agent's commands actually go
-through Auren's bridge. A raw terminal session Auren can't see is covered by
-Layer 1 (the pf firewall) instead. And no layer here stops local,
-network-free code execution — that needs the agent sandboxed.
+through Auren's bridge (see the next section). A raw terminal session Auren
+can't see is covered by Layer 1 (the pf firewall) instead. And no layer here
+stops local, network-free code execution — that needs the agent sandboxed.
+
+## Agent bridge (HTTP API)
+
+This is the integration layer: a tiny **loopback HTTP server** running inside
+the app, so any local agent framework or tool can route its actions and
+commands through Auren and get a live decision. It exposes the same gates as
+the IPC API (`agent:inspect-action`, `agent:inspect-command`,
+`guardrail:is-blocked`) — there is exactly one decision implementation, shared
+by both surfaces.
+
+- **Default ON.** The bridge starts with the app and listens on
+  `127.0.0.1:42791` (configurable via `agentBridgePort` in `settings.json`;
+  disable entirely with `{ "agentBridge": false }`).
+- **Authenticated.** Every request needs `Authorization: Bearer <token>`; the
+  token lives in `~/Library/Application Support/Auren/bridge.token` (owner-only,
+  read by any process on your account — the demo script reads it for you).
+- **Read/gate-only.** It exposes *no* write surface: no mode toggle, no block
+  list edits. The worst a leaked token enables is a local process asking Auren
+  for a decision — which is the point.
+- **Fail-closed.** While Auren is degraded, every gate refuses; a malformed or
+  errored request is answered `{ allowed: false }`.
+- **Every decision is logged** to the activity feed like a site block.
+
+Endpoints:
+
+```
+GET  /v1/status                        app, protection mode, degraded, bridge info
+GET  /v1/blocked?domain=bank.com       { blocked: true } — same answer the DNS layer enforces
+POST /v1/check/action  {"url":"...","data":{...}}       → { allowed, action, types, reason }
+POST /v1/check/command {"command":"ssh user@evil.com"}  → { allowed, action, types, reason }
+```
+
+Live demo — with the app running, this "agent loop" routes its calls through
+Auren and blocks them in front of you:
+
+```bash
+node scripts/demo-agent-bridge.mjs
+```
+
+It shows `ssh user@evil.com` and a credentials-exfil pipeline being blocked,
+then submits a fake credit card to a checkout URL — the OS-native auth prompt
+appears, and cancelling it is the "watch it block a live agent action" moment.
+Every outcome lands in the activity log.
+
+The honest limits are the same as Layer 2: the bridge is **cooperative** — an
+agent that doesn't route through it never hits these gates, and Auren still
+can't read the bytes inside a legitimate HTTPS connection.
 
 ## App blocking (blocked apps can't run)
 
@@ -505,8 +554,11 @@ src/
     sensitive.js          outgoing form-data classifier (PII / credentials)
     commands.js           OS/terminal command classifier (ssh, ping, 443 tunnels, exfil, ...)
     policy.js             decision layer over classifier signals (block / auth-gate)
+    agentgate.js          shared gate decisions (IPC + bridge) for agent actions/commands
     activity.js           plain-language activity log (JSONL)
     virt.js               VM/container-runtime detection (Docker, Parallels, UTM, ...)
+  bridge/
+    http.js               loopback HTTP bridge: 127.0.0.1, token-gated, read/gate-only
   dns/
     dns-message.js        minimal DNS wire parsing / NXDOMAIN building
     resolver.js           the local DNS server (UDP + TCP, blocks + forwards)
@@ -591,8 +643,9 @@ protection off and when* — without ever logging credentials or biometrics.
 ## Running the tests
 
 ```bash
-npm run test:unit        # 68 assertions: domains, config, signing, store, policy, pf rules (incl. DoH + safety floor), activity, app blocking, keystroke shield, quit gate, autofill plists
+npm run test:unit        # 73 assertions: domains, config, signing, store, policy, pf rules (incl. DoH + safety floor), activity, app blocking, keystroke shield, quit gate, autofill plists
 npm run test:classifier  # 29 assertions: form-data + OS-command classifiers (incl. tunnel-on-443)
+npm run test:bridge      # 23 assertions: agent-gate decisions (allow/block/auth/fail-closed) + loopback HTTP bridge (auth, routes, errors)
 npm run test:dns         # 18 assertions: real resolver + daemon (incl. app kills + autofill policies) with dig, no privileges
 npm test                 # unit + classifier
 npm run test:all         # everything
@@ -608,6 +661,8 @@ sudo npm run e2e:pf          # REAL OS-firewall check (Protection ON, as root):
 npm run audit:container      # Docker isolation audit (Protection ON): does container
                              #   traffic bypass Auren's firewall? Reports DNS, port 22,
                              #   and HTTPS reachability from inside a container
+npm run demo:bridge          # live agent-bridge demo (app running): blocks a fake agent's
+                             #   ssh/exfil, then shows the credit-card auth checkpoint
 ```
 
 `e2e:check` temporarily adds `auren-e2e-check.test` to the block list, verifies
@@ -621,6 +676,17 @@ kills it within ~1 s, and removes the entry. It refuses to run unless Protection
 is ON, and it never touches a real application.
 
 ## FAQ
+
+**How do I connect an AI agent to Auren?**
+Run the app (the bridge starts automatically), then have the agent call the
+loopback API before acting: `POST /v1/check/command` to gate an OS command,
+`POST /v1/check/action` to gate an outgoing form submission, and
+`GET /v1/blocked` to ask whether a site is blocked. The bearer token is in
+`~/Library/Application Support/Auren/bridge.token`. See the
+[Agent bridge](#agent-bridge-http-api) section and
+`node scripts/demo-agent-bridge.mjs` for a live example. It's cooperative — the
+agent has to route through Auren — which is the honest limit of every
+"guardrail" layer here.
 
 **Does it work in a headless or separate browser an agent starts?**
 Yes — that's the whole point. Blocking happens in DNS, below every browser. A
