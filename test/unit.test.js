@@ -680,6 +680,118 @@ test('autofill reconcile only writes when the desired state changes', () => {
   }
 });
 
+/* ------------------------- pf anchor load (fake pfctl) ------------------------ */
+
+// A fake `pfctl` that records its invocations and can simulate a macOS where pf
+// is already running (`-e` exits non-zero with "pf already enabled"), so the
+// anchor-load flow is testable without root. Behavior is toggled via env vars:
+//   AUREN_TEST_PFSTATE      enabled (default) | disabled — what `-s info` reports
+//   AUREN_TEST_PF_ALREADY   1 = `-e` fails with "pf already enabled"
+//   AUREN_TEST_PF_E_FAIL    1 = `-e` fails with a generic error
+const FAKE_PFCTL_SCRIPT = [
+  '#!/bin/bash',
+  'printf \'%s\\n\' "$*" >> "$AUREN_TEST_PFLOG"',
+  'case "$*" in',
+  '  "-s info")',
+  '    if [ "$AUREN_TEST_PFSTATE" = "disabled" ]; then',
+  '      echo "Status: Disabled for 0 days 00:00:00"',
+  '    else',
+  '      echo "Status: Enabled for 1 days 00:00:00"',
+  '    fi',
+  '    exit 0',
+  '    ;;',
+  '  "-e")',
+  '    if [ "$AUREN_TEST_PF_ALREADY" = "1" ]; then',
+  '      echo "No ALTQ support in kernel" >&2',
+  '      echo "ALTQ related functions disabled" >&2',
+  '      echo "pfctl: pf already enabled" >&2',
+  '      exit 1',
+  '    fi',
+  '    if [ "$AUREN_TEST_PF_E_FAIL" = "1" ]; then',
+  '      echo "pfctl: Operation not permitted" >&2',
+  '      exit 1',
+  '    fi',
+  '    exit 0',
+  '    ;;',
+  '  "-a auren -F all") exit 0 ;;',
+  '  "-a auren -f "*) exit 0 ;;',
+  '  "-a auren -sr") echo "pass out proto tcp to port 443"; exit 0 ;;',
+  '  *) exit 0 ;;',
+  'esac',
+  ''
+].join('\n');
+
+function makeFakePfctl() {
+  const dir = tmpDir();
+  const bin = path.join(dir, 'pfctl');
+  const log = path.join(dir, 'pf.log');
+  fs.writeFileSync(bin, FAKE_PFCTL_SCRIPT, { mode: 0o755 });
+  process.env.AUREN_PFCTL = bin;
+  process.env.AUREN_TEST_PFLOG = log;
+  process.env.AUREN_TEST_PFSTATE = 'enabled';
+  process.env.AUREN_TEST_PF_ALREADY = '0';
+  process.env.AUREN_TEST_PF_E_FAIL = '0';
+  return { dir, rules: path.join(dir, 'rules.txt'), log };
+}
+
+console.log('pf anchor load (fake pfctl)');
+
+test('applyAnchor succeeds when pf is already enabled and never runs -e', () => {
+  const f = makeFakePfctl();
+  fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
+  const res = pf.applyAnchor(f.rules);
+  assert.strictEqual(res.ok, true);
+  const calls = fs.readFileSync(f.log, 'utf8');
+  assert.ok(!/^-e$/m.test(calls), 'must not call pfctl -e when pf is already enabled');
+  assert.ok(calls.includes('-F all'), 'must flush the anchor');
+  assert.ok(calls.includes('-f '), 'must load the rules file');
+  assert.ok(calls.includes('-sr'), 'must verify the anchor loaded');
+});
+
+test('applyAnchor runs pfctl -e before loading the anchor when pf is disabled', () => {
+  const f = makeFakePfctl();
+  process.env.AUREN_TEST_PFSTATE = 'disabled';
+  fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
+  const res = pf.applyAnchor(f.rules);
+  assert.strictEqual(res.ok, true);
+  const calls = fs.readFileSync(f.log, 'utf8').split('\n').filter(Boolean);
+  const eIdx = calls.indexOf('-e');
+  assert.ok(eIdx !== -1, 'pfctl -e must be attempted when pf is disabled');
+  assert.ok(eIdx < calls.indexOf('-a auren -F all'), 'pfctl -e must come before the flush');
+  assert.ok(eIdx < calls.indexOf('-a auren -f ' + f.rules), 'pfctl -e must come before the load');
+});
+
+test('applyAnchor tolerates -e failing with "pf already enabled"', () => {
+  const f = makeFakePfctl();
+  process.env.AUREN_TEST_PFSTATE = 'disabled';
+  process.env.AUREN_TEST_PF_ALREADY = '1';
+  fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
+  const res = pf.applyAnchor(f.rules);
+  assert.strictEqual(res.ok, true, 'a racing "already enabled" must not fail the load');
+  const calls = fs.readFileSync(f.log, 'utf8');
+  assert.ok(/^-e$/m.test(calls), 'the -e step was attempted');
+  assert.ok(calls.includes('-a auren -F all'), 'the anchor was still flushed');
+  assert.ok(calls.includes('-f '), 'the rules were still loaded');
+});
+
+test('applyAnchor still fails on a real -e error (not "already enabled")', () => {
+  const f = makeFakePfctl();
+  process.env.AUREN_TEST_PFSTATE = 'disabled';
+  process.env.AUREN_TEST_PF_E_FAIL = '1';
+  fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
+  const res = pf.applyAnchor(f.rules);
+  assert.strictEqual(res.ok, false);
+  assert.ok(/pfctl -e failed/.test(res.error), 'real -e failures must still surface: ' + res.error);
+});
+
+test('applyAnchor rejects an empty rules file', () => {
+  const f = makeFakePfctl();
+  fs.writeFileSync(f.rules, '');
+  const res = pf.applyAnchor(f.rules);
+  assert.strictEqual(res.ok, false);
+  assert.ok(/empty rules file/.test(res.error));
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

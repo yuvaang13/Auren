@@ -231,8 +231,10 @@ function parsePfRuleStats(text) {
   return stats;
 }
 
+// The pfctl binary is injectable (AUREN_PFCTL) so the test suite can exercise
+// the anchor load/clear flow with a fake binary instead of requiring root.
 function pfctl(args) {
-  return spawnSync(PFCTL, args, { encoding: 'utf8' });
+  return spawnSync(process.env.AUREN_PFCTL || PFCTL, args, { encoding: 'utf8' });
 }
 
 // Per-rule counters for the auren anchor (see parsePfRuleStats).
@@ -258,15 +260,22 @@ function applyAnchor(rulesFile) {
   } catch (err) {
     return { ok: false, error: 'rules file unreadable: ' + err.message };
   }
-  const steps = [
-    ['-e'],
-    ['-a', ANCHOR, '-F', 'all'],
-    ['-a', ANCHOR, '-f', rulesFile]
-  ];
+  // `pfctl -e` only when pf is not already enabled. On macOS an already-running
+  // pf makes `-e` exit non-zero with "pf already enabled" (plus ALTQ warnings
+  // on Apple Silicon), which used to fail the whole anchor load forever — the
+  // rules were never inserted and the daemon retried every poll.
+  const steps = [];
+  if (!status().enabled) steps.push(['-e']);
+  steps.push(['-a', ANCHOR, '-F', 'all']);
+  steps.push(['-a', ANCHOR, '-f', rulesFile]);
   for (const args of steps) {
     const r = pfctl(args);
     if (r.status !== 0) {
       const msg = (r.stderr || r.stdout || '').trim();
+      // Belt-and-suspenders: even if the status pre-check raced or misread the
+      // info output, "pf already enabled" is not a failure — the anchor load
+      // can proceed against an enabled pf.
+      if (args[0] === '-e' && /already enabled/i.test(msg)) continue;
       return { ok: false, error: 'pfctl ' + args.join(' ') + ' failed' + (msg ? ': ' + msg : '') };
     }
   }
