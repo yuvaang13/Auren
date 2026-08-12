@@ -36,7 +36,11 @@ const STORE_FILE = 'guardrail.dat';
 const STORE_MAGIC = 'auren:v1:';
 
 // Tighten a file to owner read/write only. Returns true if a change was made.
+// Windows: the ACL model already scopes files under %APPDATA% to the owning
+// user, so this is intentionally a no-op (chmod there only toggles the
+// read-only bit and would report a spurious "change" every call).
 function ensurePermissions(file) {
+  if (process.platform === 'win32') return false;
   try {
     const st = fs.statSync(file);
     if (st.mode & 0o077) {

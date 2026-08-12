@@ -8,19 +8,29 @@
   "main": "src/main.js",
   "scripts": {
     "start": "bash scripts/dev-app.sh",
+    "start:win": "scripts\\start-win.cmd",
     "test": "npm run test:unit && npm run test:classifier",
-    "test:unit": "node test/unit.test.js",
+    "test:unit": "node test/unit.test.js && node test/platform.test.js",
     "test:classifier": "node test/sensitive.test.js && node test/commands.test.js",
     "test:bridge": "node test/agentgate.test.js && node test/bridge.test.js",
     "test:dns": "node test/dns-server.test.js",
     "test:all": "npm run test:unit && npm run test:classifier && npm run test:bridge && npm run test:dns",
     "demo:bridge": "node scripts/demo-agent-bridge.mjs",
     "e2e:check": "bash scripts/e2e-check.sh",
+    "e2e:check:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\e2e-check.ps1",
+    "install:daemon": "bash scripts/install-daemon.sh",
+    "install:daemon:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\install-daemon.ps1",
     "e2e:pf": "bash scripts/e2e-pf-check.sh",
     "e2e:apps": "bash scripts/e2e-apps-check.sh",
-    "audit:container": "bash scripts/audit-container-block.sh"
+    "audit:container": "bash scripts/audit-container-block.sh",
+    "icon": "node scripts/make-icon.js && node scripts/make-ico.js",
+    "dist": "npm run icon && electron-builder",
+    "dist:mac": "npm run icon && electron-builder --mac",
+    "dist:win": "npm run icon && electron-builder --win",
+    "dist:win:dir": "npm run icon && electron-builder --win --dir"
   },
   "devDependencies": {
-    "electron": "^43.3.0"
+    "electron": "^43.3.0",
+    "electron-builder": "^26.0.12"
   }
 }

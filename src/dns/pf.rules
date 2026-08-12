@@ -1,0 +1,31 @@
+# Auren OS-level terminal/network guard (auto-generated).
+# Allow rules precede block rules (pf evaluates first-match wins).
+pass in  on lo0 all
+pass out on lo0 all
+block out proto { tcp udp } to 1.1.1.1
+block out proto { tcp udp } to 1.0.0.1
+block out proto { tcp udp } to 2606:4700:4700::1111
+block out proto { tcp udp } to 2606:4700:4700::1001
+block out proto { tcp udp } to 8.8.8.8
+block out proto { tcp udp } to 8.8.4.4
+block out proto { tcp udp } to 2001:4860:4860::8888
+block out proto { tcp udp } to 2001:4860:4860::8844
+block out proto { tcp udp } to 9.9.9.9
+block out proto { tcp udp } to 149.112.112.112
+block out proto { tcp udp } to 2620:fe::fe
+block out proto { tcp udp } to 2620:fe::9
+block out proto { tcp udp } to 45.90.28.190
+block out proto { tcp udp } to 45.90.30.190
+block out proto { tcp udp } to 94.140.14.14
+block out proto { tcp udp } to 94.140.15.15
+block out proto { tcp udp } to 2a10:50c0::ad1:ff
+block out proto { tcp udp } to 2a10:50c0::ad2:ff
+pass out proto { tcp udp } to port 53
+pass out proto tcp to port 80
+pass out proto tcp to port 443
+block out proto icmp
+block out proto icmp6
+block out proto { tcp udp } to port { 21 22 23 25 110 135 137 138 139 143 445 465 587 853 993 995 1080 3389 5900 }
+block out proto { tcp udp } to 169.254.169.254
+block out proto { tcp udp } to 169.254.169.253
+block out proto { tcp udp } to 100.100.100.200

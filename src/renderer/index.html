@@ -37,9 +37,9 @@
       </div>
       <div class="onboarding-step hidden" id="ob-step-2">
         <h1>your block list</h1>
-        <p>Add a site below and Auren makes it unreachable everywhere on this Mac. Changes apply instantly &mdash; no save button.</p>
+        <p>Add a site below and Auren makes it unreachable everywhere on this computer. Changes apply instantly &mdash; no save button.</p>
         <p>Turning protection <strong>off</strong> requires your fingerprint or device passcode, and then keeps sites blocked for 10 seconds while you confirm &mdash; so an AI agent can&rsquo;t turn it off on its own.</p>
-        <p>While protection is on, auren also hides your keystrokes: this window can&rsquo;t be captured on screen, and keystroke-reading agents can&rsquo;t intercept what you type here.</p>
+        <p id="ob-shield">While protection is on, auren also hides your keystrokes: this window can&rsquo;t be captured on screen, and keystroke-reading agents can&rsquo;t intercept what you type here.</p>
         <button class="primary" id="ob-finish" type="button">Start</button>
       </div>
     </div>
@@ -93,7 +93,7 @@
                 <span class="live-dot"></span>
                 Active
               </span>
-              <span class="shield-badge hidden" id="keystroke-shield-badge" role="status" title="While Protection is on, auren hides your keystrokes: this window can't be screen-captured, and macOS Secure Event Input blocks keystroke-reading agents from reading what you type here.">
+              <span class="shield-badge hidden" id="keystroke-shield-badge" role="status" title="While Protection is on, auren hides your keystrokes: this window can't be screen-captured, and Secure Event Input blocks keystroke-reading agents from reading what you type here.">
                 <svg class="shield-key-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <circle cx="8.5" cy="15" r="3.2" stroke="currentColor" stroke-width="1.7"/>
                   <path d="M10.8 12.7L19 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
@@ -168,9 +168,9 @@
         <p class="error hidden" id="add-error"></p>
         <ul id="block-list" class="block-list"></ul>
         <div class="empty hidden" id="block-empty">
-          <span>No sites blocked yet. Add one above to make it unreachable on this Mac.</span>
+          <span>No sites blocked yet. Add one above to make it unreachable on this computer.</span>
         </div>
-        <p class="note">While Protection is on, Auren also blocks OS/terminal-level network access on this Mac &mdash; ping, ssh, FTP/Telnet, and cloud-metadata endpoints &mdash; for every process, including your own terminal.</p>
+        <p class="note">While Protection is on, Auren also blocks OS/terminal-level network access on this computer &mdash; ping, ssh, FTP/Telnet, and cloud-metadata endpoints &mdash; for every process, including your own terminal.</p>
       </section>
 
       <section class="card apps-card">
@@ -208,7 +208,7 @@
     </div>
 
     <footer class="footer-note">
-      Auren blocks websites at the network level on this Mac. It is a cooperative guardrail, not a guarantee &mdash; the README spells out exactly what it can and can&rsquo;t do.
+      Auren blocks websites at the network level on this computer. It is a cooperative guardrail, not a guarantee &mdash; the README spells out exactly what it can and can&rsquo;t do.
     </footer>
   </main>
 

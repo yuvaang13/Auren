@@ -12,12 +12,15 @@ agent to turn that protection off.
 
 ## What this actually does
 
-When **Protection Mode is ON**, Auren points your Mac's DNS at a tiny local
+When **Protection Mode is ON**, Auren points your computer's DNS at a tiny local
 resolver it runs itself. Any domain on your block list simply **does not
 resolve** (the resolver answers `NXDOMAIN`, exactly like "site doesn't exist"),
 so the site is unreachable from **every** browser and app — not just one. There
 is no browser extension, no per-browser setup, and nothing an app can do to
-"skip" the block by opening a different window.
+"skip" the block by opening a different window. (Under the hood: on macOS Auren
+rewrites each network service's DNS with `networksetup`; on Windows it rewrites
+each interface's servers with the PowerShell `DnsClient` cmdlets. The daemon
+remembers your original servers and restores them when protection turns off.)
 
 When **Protection Mode is ON**, apps you block also **cannot run**. Search an
 installed app by name, add it to the app block list, and the root background
@@ -33,9 +36,10 @@ be asked to fill in your saved credentials. The files are removed again the
 moment protection turns off (see [Browser autofill blocking](#browser-autofill-blocking-default-on)).
 
 When you flip protection ON (or add/remove a site) Auren also flushes the
-macOS DNS cache, so sites you visited *before* the change don't keep loading
+system DNS cache, so sites you visited *before* the change don't keep loading
 from a previously-cached IP — the next lookup is forced through the local
-resolver.
+resolver. (macOS: `dscacheutil`/`killall mDNSResponder`; Windows:
+`ipconfig /flushdns`.)
 
 When **Protection Mode is OFF**, your DNS goes back to normal and everything is
 reachable as usual.
@@ -268,12 +272,20 @@ cloud-instance credentials. This is a **default-on** feature: while Protection
 Mode is ON, both layers below are active with no setup. It is ON by default and
 tied to the same switch as website blocking.
 
-### Layer 1 — an OS firewall (pf) in the root daemon
+### Layer 1 — an OS firewall in the root daemon
 
-The root daemon loads a dedicated macOS packet-filter (`pf`) anchor named
-`auren` whenever Protection is ON. Because it matches **IPs and ports, not
-names**, it closes the gap where direct-IP commands (`ssh user@1.2.3.4`,
-`ping 8.8.8.8`) sail past DNS blocking:
+The root daemon loads a dedicated OS firewall whenever Protection is ON: a
+macOS packet-filter (`pf`) anchor named `auren`, or on Windows a set of
+outbound **BLOCK** rules created with `New-NetFirewallRule` (group `Auren`,
+translated from the same rule file). Both match **IPs and ports, not names**,
+so they close the gap where direct-IP commands (`ssh user@1.2.3.4`,
+`ping 8.8.8.8`) sail past DNS blocking. Windows' default outbound policy is
+Allow, so only the explicit block rules are created — there is no
+allow-vs-block precedence fight, and the shared safety floor already strips
+allowlist entries that would carve out a blocked port or host. One honest
+difference: Windows Firewall exposes no per-rule packet counters, so the
+`doh_blocked` packet telemetry is macOS-only; Windows logs rule application
+instead.
 
 - **Blocked by default:** ICMP echo and traceroute (`ping`, `mtr`);
   outbound to command-tool ports — 21 FTP, 22 SSH/SCP/SFTP, 23 Telnet,
@@ -384,12 +396,15 @@ starts — and re-kills it on every subsequent launch — until you remove it fr
 the list or turn protection off.
 
 - **Matching is by exact executable path.** The app you search resolves to its
-  executable path (`/Applications/Discord.app/Contents/MacOS/Discord`), and the
-  daemon only matches that exact path — it never substring-matches, so blocking
-  `Discord` never touches `Discord Web` or anything with a similar name. The
-  daemon also matches *argv tokens*: a launcher script that execs a blocked app
+  executable path (`/Applications/Discord.app/Contents/MacOS/Discord`, or
+  `C:\Program Files\Discord\Discord.exe` on Windows), and the daemon only
+  matches that exact path — it never substring-matches, so blocking `Discord`
+  never touches `Discord Web` or anything with a similar name. The daemon also
+  matches *argv tokens*: a launcher script that execs a blocked app
   (`node run-discord.js`) still matches, because the app path appears as an
-  argument. Matches are exact token comparisons, never `includes()`.
+  argument. Matches are exact token comparisons, never `includes()`. (On macOS
+  the daemon scans `ps`; on Windows it queries `Win32_Process` via PowerShell
+  and kills with `taskkill`.)
 - **The daemon kills, and keeps killing.** Enforcement lives in the root
   daemon (so an app can't kill the enforcer back), scans processes every second,
   and is tied to the same Protection switch as DNS + firewall blocking. If the
@@ -417,8 +432,11 @@ policy mechanism rather than touching any browser or user setting.
 - **How it works:** while protection is on, the root daemon writes one small
   property-list file per browser into `/Library/Managed Preferences/`
   (`com.google.Chrome.plist`, `org.chromium.Chromium.plist`,
-  `com.brave.Browser.plist`, `com.microsoft.Edge.plist`). The policy keys force
-  `PasswordManagerEnabled`, `AutofillAddressEnabled`,
+  `com.brave.Browser.plist`, `com.microsoft.Edge.plist`). On Windows it writes
+  the *same* policy names as `REG_DWORD 0` values under the vendor HKLM policy
+  roots (`HKLM\Software\Policies\Google\Chrome`, `…\Chromium`,
+  `…\BraveSoftware\Brave`, `…\Microsoft\Edge`) with `reg.exe`. The policy keys
+  force `PasswordManagerEnabled`, `AutofillAddressEnabled`,
   `AutofillCreditCardEnabled`, and (for older builds) `AutoFillEnabled` to
   `false` — Chrome/Chromium/Brave/Edge read these at launch and grey out the
   corresponding autofill options. No browser profile, saved password, or user
@@ -444,11 +462,13 @@ Turning protection **on** is instant and frictionless — a user (or an agent)
 should always be able to increase protection.
 
 Turning protection **off** requires an OS-native biometric or device-passcode
-check (macOS Touch ID, with the standard macOS password prompt as the fallback
-on machines without Touch ID). After a successful check, the block list stays
-active for a **10-second cooldown** before protection actually turns off, so a
-human has a moment to confirm the unlock. The reason is simple: an AI agent
-that can click buttons must not be able to click protection off on its own.
+check (macOS Touch ID with the standard macOS password prompt as the fallback;
+Windows Hello via the UserConsentVerifier API with a UAC elevation prompt as
+the fallback on machines without Hello). After a successful check, the block
+list stays active for a **10-second cooldown** before protection actually turns
+off, so a human has a moment to confirm the unlock. The reason is simple: an AI
+agent that can click buttons must not be able to click protection off on its
+own.
 
 **Privacy invariant:** Auren only ever calls the OS's authentication APIs and
 receives a **pass/fail result**. It never sees, stores, or transmits any
@@ -496,13 +516,23 @@ means, and it engages the moment protection turns on:
 
 ## Requirements
 
-- **macOS** (the fully supported platform right now). The code is structured so
-  a Windows port can be added (local DNS via `netsh`, Windows Hello via a
-  native module), but that is **planned, not built**.
+- **macOS and Windows** are supported. The platform-specific mechanisms are
+  behind a `src/platform/` seam: macOS uses a pf firewall anchor, the
+  networksetup/scutil DNS tools, managed-prefs plists, and Touch ID;
+  Windows uses the Windows Firewall, the PowerShell DnsClient cmdlets, HKLM
+  Chromium policy registry keys, and Windows Hello (with a UAC fallback). The
+  daemon runs as a launchd LaunchDaemon on macOS and as a SYSTEM Scheduled
+  Task (`AurenGuardrailDaemon`) on Windows.
 - One-time admin privileges: installing the background service requires a
-  standard macOS password prompt. After that, toggling protection and editing
-  the block list need no privileges at all.
+  standard macOS password prompt (or an elevated Windows task registration).
+  After that, toggling protection and editing the block list need no
+  privileges at all.
 - Node.js + npm for development (the app itself is an Electron app).
+- Honest limits that carry across both platforms: packet counters for the DoH
+  block list (`doh_blocked` telemetry) are macOS-only — Windows Firewall
+  exposes no per-rule packet counters — and the Windows autofill/daemon
+  mechanisms are registry/task-based rather than plist/launchd-based. Where a
+  mechanism differs, the README sections below call it out.
 
 ## Getting started (development)
 
@@ -530,14 +560,17 @@ and then waits out a 10-second cooldown before sites become reachable.
 If you prefer the command line:
 
 ```bash
-sudo bash scripts/install-daemon.sh
+sudo bash scripts/install-daemon.sh            # macOS
+powershell -ExecutionPolicy Bypass -File scripts\install-daemon.ps1   # Windows
 ```
 
-This installs (or updates) the root LaunchDaemon `com.auren.guardrail`, which
-runs the DNS resolver persistently, independent of any browser or app. It
-reconciles the system's actual DNS with the requested Protection Mode every
-~second, reading the same `config.json` the app writes — so changes to the
-block list apply in real time with no restart.
+The macOS script installs (or updates) the root LaunchDaemon
+`com.auren.guardrail`; the Windows script registers the `AurenGuardrailDaemon`
+Scheduled Task running as SYSTEM. Either way the daemon runs the DNS resolver
+persistently, independent of any browser or app, reconciles the system's
+actual DNS with the requested Protection Mode every ~second, and reads the same
+`signed config` the app writes — so changes to the block list apply in real
+time with no restart.
 
 ## How it's built
 
@@ -562,27 +595,42 @@ src/
   dns/
     dns-message.js        minimal DNS wire parsing / NXDOMAIN building
     resolver.js           the local DNS server (UDP + TCP, blocks + forwards)
-    cache.js              flushes macOS DNS caches on mode/block-list changes
-    pf.js                 macOS pf firewall anchor rules (block ping/ssh/DoH/...)
+    cache.js              flushes OS DNS caches on mode/block-list changes
+    pf.js                 shared firewall rule engine + macOS pf anchor (block ping/ssh/DoH/...)
+    pf-win.js             Windows Firewall translation of the same rule file
     daemon.js             root service: verifies config signature, fails closed,
-                          writes heartbeat, reconciles DNS + pf + apps + autofill,
+                          writes heartbeat, reconciles DNS + firewall + apps + autofill,
                           runs the resolver
   platform/
-    biometrics.js         macOS Touch ID / passcode gate (OS-native, pass/fail)
+    paths.js              platform-aware storage / spool / daemon paths
+    biometrics.js         Touch ID / passcode (mac) | Windows Hello / UAC (win)
     dns-controller.js     daemon install + enforcement-status checks
-    app-resolver.js       installed-app search (LaunchServices + Info.plist)
-    autofill.js           browser autofill blocking via managed-prefs plists
+    dnsops.js             DNS takeover primitives: networksetup/scutil (mac) |
+                          PowerShell DnsClient (win)
+    procs.js              process listing/killing for app blocking: ps (mac) |
+                          Win32_Process + taskkill (win)
+    app-resolver.js       installed-app search: LaunchServices (mac) |
+                          exe scan + VersionInfo (win)
+    autofill.js           browser autofill blocking: managed-prefs plists (mac) |
+                          HKLM Chromium policy registry keys (win)
 scripts/
-  install-daemon.sh       install the root daemon from the CLI
+  install-daemon.sh       install the root daemon from the CLI (macOS)
+  install-daemon.ps1      register the SYSTEM Scheduled Task (Windows)
   e2e-check.sh            real end-to-end verification (blocked vs. allowed)
+  e2e-check.ps1           the same, via Resolve-DnsName (Windows)
   e2e-apps-check.sh       real end-to-end app-block verification (needs Protection ON)
 test/
   unit.test.js            core + store + signing + policy, no privileges
   sensitive.test.js       classifier samples (false positives / negatives)
-  dns-server.test.js      real resolver/daemon + mock upstream + dig
+  dns-server.test.js      real resolver/daemon + mock upstream + a Node DNS client
+  platform.test.js        pure tests for the Windows port (pf-win, dnsops-win,
+                          procs-win, autofill-win, dns-controller-win, biometrics-win,
+                          app-resolver-win)
 ```
 
-Persistence lives in three small places:
+Persistence lives in three small places (macOS paths shown; Windows uses
+`%APPDATA%\Auren\` for the user store and `%PROGRAMDATA%\Auren\` for the
+daemon's signed config / heartbeat / state):
 
 - `~/Library/Application Support/Auren/guardrail.dat` — the **canonical**,
   encrypted block state (`mode`, `blocklist`, `appBlocklist`, lock/unlock
@@ -595,14 +643,20 @@ Persistence lives in three small places:
   the firewall allowlist, and the autofill-block toggle.
 - `~/Library/Application Support/Auren/activity.jsonl` — the plain-language log.
 
-`/Library/LaunchDaemons/com.auren.guardrail.plist` and `/usr/local/lib/auren/`
-hold the installed daemon and its copy of the resolver code. Removing it all:
+The macOS install lives in `/Library/LaunchDaemons/com.auren.guardrail.plist`
+and `/usr/local/lib/auren/` (the staged daemon + its modules). The Windows
+install is the `AurenGuardrailDaemon` Scheduled Task (SYSTEM, highest) running
+the staged daemon from the install directory. Removing it all on macOS:
 
 ```bash
 sudo launchctl unload /Library/LaunchDaemons/com.auren.guardrail.plist
 sudo rm /Library/LaunchDaemons/com.auren.guardrail.plist
 sudo rm -rf /usr/local/lib/auren "/Library/Application Support/Auren"
 ```
+
+On Windows, uninstall the task from the UI (or
+`Unregister-ScheduledTask -TaskName AurenGuardrailDaemon`) and delete the
+install directory and `%PROGRAMDATA%\Auren`.
 
 ## The UI (the whole app)
 
@@ -642,15 +696,23 @@ protection off and when* — without ever logging credentials or biometrics.
 
 ## Running the tests
 
+The suite is **platform-agnostic and CI-covered** (GitHub Actions on
+`macos-latest` and `windows-latest`): it needs no privileges, no dig binary,
+and never touches a real machine's DNS or firewall.
+
 ```bash
-npm run test:unit        # 73 assertions: domains, config, signing, store, policy, pf rules (incl. DoH + safety floor), activity, app blocking, keystroke shield, quit gate, autofill plists
+npm run test:unit        # 73 + 27 assertions: core + store + signing + policy, pf rules (incl. DoH + safety floor),
+                         # activity, app blocking, keystroke shield, quit gate, autofill plists, and the pure
+                         # Windows-port tests (pf-win translation, dnsops-win, procs-win, autofill-win, ...)
 npm run test:classifier  # 29 assertions: form-data + OS-command classifiers (incl. tunnel-on-443)
 npm run test:bridge      # 23 assertions: agent-gate decisions (allow/block/auth/fail-closed) + loopback HTTP bridge (auth, routes, errors)
-npm run test:dns         # 18 assertions: real resolver + daemon (incl. app kills + autofill policies) with dig, no privileges
+npm run test:dns         # 18 assertions: real resolver + daemon (incl. app kills + autofill policies) with a
+                         # Node DNS client and a mock upstream, no privileges
 npm test                 # unit + classifier
 npm run test:all         # everything
 npm run e2e:check        # REAL system-wide DNS check (daemon installed + Protection ON):
                          #   blocked domain -> NXDOMAIN, normal domain -> resolves
+npm run e2e:check:win    # the same check via Resolve-DnsName on Windows
 npm run e2e:apps         # REAL app-block check (daemon installed + Protection ON):
                          #   adds a dummy app to the block list, verifies the daemon
                          #   kills it, then removes the entry

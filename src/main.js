@@ -29,7 +29,6 @@
 
 'use strict';
 const path = require('path');
-const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
 const { app, BrowserWindow, ipcMain, Menu, nativeTheme, nativeImage, Notification } = require('electron');
@@ -48,16 +47,18 @@ const dnsController = require('./platform/dns-controller');
 const appResolver = require('./platform/app-resolver');
 const { requireAuthentication, requireNativeAuth } = require('./platform/biometrics');
 const shield = require('./core/shield');
+const paths = require('./platform/paths');
 
-const USER_DATA = path.join(os.homedir(), 'Library', 'Application Support', 'Auren');
+const USER_DATA = paths.userDataDir();
+const SYSTEM_SPOOL = paths.systemSpoolDir();
 const CONFIG_FILE = path.join(USER_DATA, 'config.json');
 const ACTIVITY_FILE = path.join(USER_DATA, 'activity.jsonl');
 const SETTINGS_FILE = path.join(USER_DATA, 'settings.json');
 const SETTINGS_SIG_FILE = SETTINGS_FILE + '.sig';
-const STATE_FILE = '/Library/Application Support/Auren/state.json';
+const STATE_FILE = paths.stateFile();
 const KEY_FILE = path.join(USER_DATA, store.KEY_FILE);
 const STORE_FILE = path.join(USER_DATA, store.STORE_FILE);
-const HEARTBEAT_FILE = '/Library/Application Support/Auren/heartbeat.json';
+const HEARTBEAT_FILE = paths.heartbeatFile();
 const BRIDGE_TOKEN_FILE = path.join(USER_DATA, 'bridge.token');
 
 app.setName('auren');

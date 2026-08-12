@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Tests are pure Node (no electron binary needed); skip postinstall so
+      # the electron download doesn't slow CI down.
+      - name: Install dev dependencies
+        run: npm install --ignore-scripts
+
+      - name: Run the full test suite
+        run: npm run test:all

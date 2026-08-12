@@ -1,24 +1,26 @@
 /* Auren — cache.js
  *
- * Flushes the macOS DNS caches so that blocking takes effect immediately for
+ * Flushes the OS DNS caches so that blocking takes effect immediately for
  * sites that were resolved before Protection Mode was turned on.
  *
- * DNS-level blocking only affects NEW resolutions: macOS's mDNSResponder and
+ * DNS-level blocking only affects NEW resolutions: the OS resolver and
  * browsers keep previously-answered IPs (and live connections) cached, so a
  * site visited while protection was OFF would keep loading from cache after it
  * is turned ON. The root daemon flushes the OS cache at every transition
  * (mode on/off, block-list change), forcing the next lookup to re-resolve
  * through Auren's resolver.
  *
- * `dscacheutil -flushcache` and `killall -HUP mDNSResponder` both require root;
- * that's why this lives in the daemon and not the desktop app. The exec is
- * injectable so the unprivileged test suite can exercise the logic without
- * touching a real machine's cache.
+ * Platform: macOS uses `dscacheutil` + `killall -HUP mDNSResponder`; Windows
+ * uses `ipconfig /flushdns`. All require admin, which is why this lives in the
+ * daemon and not the desktop app. The exec is injectable so the unprivileged
+ * test suite can exercise the logic without touching a real machine's cache.
  */
 
 'use strict';
 const fs = require('fs');
 const { execFile, execFileSync } = require('child_process');
+
+const WIN = process.platform === 'win32';
 
 // macOS consolidated its command-line tools into /usr/bin; older systems keep
 // the classic /bin and /usr/sbin copies (often as symlinks). Resolve each tool
@@ -32,13 +34,26 @@ function resolveExecutable(candidates) {
   return candidates[0];
 }
 
+function windowsFlushCommands() {
+  // ipconfig lives in the Windows system dir; resolve it via PATH with a
+  // well-known fallback so the daemon never ENOENTs on odd configurations.
+  const candidates = ['C:\\Windows\\System32\\ipconfig.exe', 'ipconfig'];
+  let resolved = null;
+  for (const p of candidates) {
+    try { fs.accessSync(p, fs.constants.X_OK); resolved = p; break; } catch { /* try next */ }
+  }
+  return [[resolved || 'C:\\Windows\\System32\\ipconfig.exe', ['/flushdns']]];
+}
+
 // Order matters: flush first, then poke mDNSResponder so it drops its in-memory
 // positive and negative cache entries. Failures are non-fatal — worst case the
 // cache survives and blocking still applies to genuinely new lookups.
-const FLUSH_COMMANDS = [
-  [resolveExecutable(['/usr/bin/dscacheutil', '/usr/sbin/dscacheutil']), ['-flushcache']],
-  [resolveExecutable(['/usr/bin/killall', '/bin/killall']), ['-HUP', 'mDNSResponder']]
-];
+const FLUSH_COMMANDS = WIN
+  ? windowsFlushCommands()
+  : [
+      [resolveExecutable(['/usr/bin/dscacheutil', '/usr/sbin/dscacheutil']), ['-flushcache']],
+      [resolveExecutable(['/usr/bin/killall', '/bin/killall']), ['-HUP', 'mDNSResponder']]
+    ];
 
 function describeError(cmd, err) {
   return cmd + ': ' + (err && err.message || err);

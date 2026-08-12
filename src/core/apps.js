@@ -98,13 +98,21 @@ function exeMatches(exe, tokens, entry) {
 // Which running PIDs (from ps lines) belong to a blocked app? Never the
 // caller's own pid and never a protected executable (the daemon interpreter).
 function findBlockedPids(psLines, appBlocklist, opts) {
+  const procs = (Array.isArray(psLines) ? psLines : []).map(parsePsLine).filter(Boolean);
+  return findBlockedProcesses(procs, appBlocklist, opts);
+}
+
+// Which running processes (descriptors from src/platform/procs-*) belong to a
+// blocked app? Same guarantees as findBlockedPids, but the descriptors — not
+// raw ps text — come from the caller, so macOS `ps` and Windows CIM can both
+// feed it. A descriptor is { pid, exe, tokens }.
+function findBlockedProcesses(procs, appBlocklist, opts) {
   const selfPid = (opts && opts.selfPid) || 0;
   const protectedExes = new Set((opts && opts.protectedExes) || []);
   const blocked = normalizeAppBlocklist(appBlocklist);
   const hits = [];
-  for (const line of psLines) {
-    const p = parsePsLine(line);
-    if (!p || p.pid === selfPid || p.pid <= 1) continue;
+  for (const p of (Array.isArray(procs) ? procs : [])) {
+    if (!p || !p.pid || p.pid <= 1 || p.pid === selfPid) continue;
     if (protectedExes.has(p.exe)) continue;
     for (const entry of blocked) {
       if (exeMatches(p.exe, p.tokens, entry)) {
@@ -132,4 +140,4 @@ function appSafetyFloor(entries, opts) {
   return { appBlocklist: kept, dropped, changed: dropped.length > 0 };
 }
 
-module.exports = { validateBlockApp, normalizeAppBlocklist, parsePsLine, exeMatches, findBlockedPids, appSafetyFloor };
+module.exports = { validateBlockApp, normalizeAppBlocklist, parsePsLine, exeMatches, findBlockedPids, findBlockedProcesses, appSafetyFloor };

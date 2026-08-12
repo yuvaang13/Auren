@@ -13,6 +13,9 @@
 
 'use strict';
 const { spawnSync } = require('child_process');
+// Platform process listing (mac: ps, win: CIM) — used only by the app, never
+// staged into the daemon install dir, so the relative require is safe.
+const procs = require('../platform/procs');
 
 // Ordered heuristic detectors. A single `ps` output line can match several
 // (e.g. qemu-system running under Colima), and that's honest: both layers
@@ -39,17 +42,24 @@ function detectVirtualization(psOutput) {
 
 let cache = { at: 0, list: [] };
 
-// Shell out to `ps` and classify; cached for 10 s so the app's poll loop never
-// forks on every state push.
+// Shell out to the platform process list and classify; cached for 10 s so the
+// app's poll loop never forks on every state push. On Windows the CIM query
+// replaces `ps`; on macOS (and other unix) we keep the historical `ps comm`
+// scan.
 function runningVirtualization() {
   const now = Date.now();
   if (now - cache.at < 10000) return cache.list.slice();
-  let out = '';
+  let blob = '';
   try {
-    const r = spawnSync('/bin/ps', ['-axo', 'comm='], { encoding: 'utf8', timeout: 5000 });
-    out = r.stdout || '';
+    if (process.platform === 'win32') {
+      const list = procs.list();
+      if (list) blob = list.map((p) => (p.exe || '')).join('\n');
+    } else {
+      const r = spawnSync('/bin/ps', ['-axo', 'comm='], { encoding: 'utf8', timeout: 5000 });
+      blob = r.stdout || '';
+    }
   } catch {}
-  cache = { at: now, list: detectVirtualization(out) };
+  cache = { at: now, list: detectVirtualization(blob) };
   return cache.list.slice();
 }
 

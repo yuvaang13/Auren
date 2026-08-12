@@ -97,6 +97,7 @@ function render() {
   const on = state.mode === 'on';
   const cooldown = cooldownUntil();
   const inCooldown = cooldown > 0;
+  const machine = state.platform === 'darwin' ? 'this Mac' : state.platform === 'win32' ? 'this PC' : 'this computer';
   const toggle = $('mode-toggle');
   toggle.checked = on;
   toggle.disabled = busy || inCooldown;
@@ -123,9 +124,9 @@ function render() {
         : (on
             ? (state.enforcement
                 ? (state.terminalBlock
-                    ? 'Blocked sites are unreachable in every app and browser on this Mac. Terminal and OS-level network access (ping, ssh, \u2026) is blocked too.' + (state.dohBlock ? ' Known DoH/DoT endpoints are blocked as well.' : '')
-                    : 'Blocked sites are unreachable in every app and browser on this Mac.')
-                : 'Protection is ON, but this Mac isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.')
+                    ? 'Blocked sites are unreachable in every app and browser on ' + machine + '. Terminal and OS-level network access (ping, ssh, \u2026) is blocked too.' + (state.dohBlock ? ' Known DoH/DoT endpoints are blocked as well.' : '')
+                    : 'Blocked sites are unreachable in every app and browser on ' + machine + '.')
+                : 'Protection is ON, but ' + machine + ' isn\u2019t resolving through Auren yet. The background service may still be starting \u2014 if this persists, check Recent activity.')
             : 'Everything is reachable as usual. Flip the switch to start guarding.'));
 
   const vmOn = on && Array.isArray(state.vmsDetected) && state.vmsDetected.length > 0;
@@ -138,7 +139,7 @@ function render() {
   const settingsWarn = $('settings-warning');
   settingsWarn.classList.toggle('hidden', !state.settingsTampered);
   if (state.settingsTampered) {
-    settingsWarn.textContent = 'Your settings file failed verification, so protection is running on safe defaults. Open ~/Library/Application Support/Auren/settings.json to review it, then restart auren.';
+    settingsWarn.textContent = 'Your settings file failed verification, so protection is running on safe defaults. Review settings.json and restart auren.';
   }
 
     const list = $('block-list');
@@ -204,8 +205,16 @@ async function init() {
   state = await api.getState();
   render();
 
+  // The shield badge claims "keystrokes hidden" via Secure Event Input, which
+  // is macOS-only; on other platforms the honest claim is content protection.
+  const badge = $('keystroke-shield-badge');
   if (state.platform !== 'darwin') {
-    showError('mode-error', 'This build supports macOS. Other platforms are planned, not yet supported.');
+    badge.title = "While Protection is on, auren's window can't be screen-captured, so nothing you type in auren ever appears in a recording.";
+    $('ob-shield').textContent = 'While protection is on, auren hides your keystrokes: this window can\u2019t be captured on screen, so nothing you type here ever appears in a recording.';
+  }
+
+  if (state.platform !== 'darwin' && state.platform !== 'win32') {
+    showError('mode-error', 'This build supports macOS and Windows. Other platforms are planned, not yet supported.');
     $('mode-toggle').disabled = true;
   }
 

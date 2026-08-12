@@ -28,7 +28,6 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
 
 // The daemon is run either from the repo (src/dns/) or from the flattened
 // install dir (/usr/local/lib/auren/). Resolve sibling modules in both cases.
@@ -56,6 +55,11 @@ const { readConfigFile, verifyData } = load('config.js');
 const { makeEntry, appendActivity } = load('activity.js');
 const apps = load('apps.js');
 const autofill = loadPlatform('autofill.js');
+// Platform DNS primitives (networksetup/scutil on macOS, PowerShell DnsClient
+// on Windows) — the daemon never calls into the OS directly for DNS.
+const dnsops = loadPlatform('dnsops.js');
+// Platform process listing/killing for the app blocker.
+const procs = loadPlatform('procs.js');
 
 function logActivity(entry) {
   if (!ACTIVITY) return;
@@ -71,17 +75,26 @@ function logActivity(entry) {
   } catch (err) { log('error', 'activity write failed: ' + err.message); }
 }
 
-const CONFIG = process.env.AUREN_CONFIG;
-const ACTIVITY = process.env.AUREN_ACTIVITY;
-const STATE = process.env.AUREN_STATE;
-const KEY_FILE = process.env.AUREN_KEY;
-const HEARTBEAT = process.env.AUREN_HEARTBEAT;
-const DNS_ENABLED = String(process.env.AUREN_DNS_ENABLED || '1') !== '0';
-const PORT = parseInt(process.env.AUREN_PORT || '53', 10);
-const PF_ENABLED = String(process.env.AUREN_PF_ENABLED || '1') !== '0';
-const PF_RULES = process.env.AUREN_PF_RULES || path.join(__dirname, 'pf.rules');
-const APPS_ENABLED = String(process.env.AUREN_APPS_ENABLED || '1') !== '0';
-const AUTOFILL_ENABLED = String(process.env.AUREN_AUTOFILL_ENABLED || '1') !== '0';
+// Config comes from env vars (mac LaunchDaemon) or --AUREN_*=... argv
+// (Windows Scheduled Task, which can't carry env vars cleanly). argv wins.
+function argValue(name, def) {
+  const want = '--' + name + '=';
+  for (const a of process.argv.slice(2)) if (a.startsWith(want)) return a.slice(want.length);
+  return process.env[name] !== undefined ? process.env[name] : def;
+}
+
+const CONFIG = argValue('AUREN_CONFIG');
+const ACTIVITY = argValue('AUREN_ACTIVITY');
+const STATE = argValue('AUREN_STATE');
+const KEY_FILE = argValue('AUREN_KEY');
+const HEARTBEAT = argValue('AUREN_HEARTBEAT');
+const DNS_ENABLED = String(argValue('AUREN_DNS_ENABLED', '1')) !== '0';
+const PORT = parseInt(argValue('AUREN_PORT', '53'), 10);
+const PF_ENABLED = String(argValue('AUREN_PF_ENABLED', '1')) !== '0';
+const PF_RULES = argValue('AUREN_PF_RULES', path.join(__dirname, 'pf.rules'));
+const APPS_ENABLED = String(argValue('AUREN_APPS_ENABLED', '1')) !== '0';
+const AUTOFILL_ENABLED = String(argValue('AUREN_AUTOFILL_ENABLED', '1')) !== '0';
+const DAEMON_LOG = argValue('AUREN_DAEMON_LOG', '/tmp/auren-daemon.log');
 
 // Fast tick. The dominant cost per tick is the ps app-block scan (~35 ms);
 // all subprocess-heavy DNS/firewall work is deferred until the config changes
@@ -97,7 +110,7 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 14;
+const DAEMON_VERSION = 15;
 
 let mode = 'off';
 let blocklist = [];
@@ -147,7 +160,7 @@ let integrityReported = false;
 
 function log(level, msg) {
   const line = `${new Date().toISOString()} [${level}] ${msg}`;
-  try { fs.appendFileSync(process.env.AUREN_DAEMON_LOG || '/tmp/auren-daemon.log', line + '\n'); } catch {}
+  try { fs.appendFileSync(DAEMON_LOG, line + '\n'); } catch {}
 }
 
 // Load the HMAC key that the main process uses to sign config.json. The daemon
@@ -178,33 +191,6 @@ function writeHeartbeat() {
   try { fs.writeFileSync(HEARTBEAT, body, { mode: 0o644 }); } catch (err) { log('error', 'heartbeat write failed: ' + err.message); }
 }
 
-function runNetworksetup(args) {
-  const r = spawnSync('/usr/sbin/networksetup', args, { encoding: 'utf8' });
-  return { status: r.status, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim() };
-}
-
-function listServices() {
-  const r = runNetworksetup(['-listallnetworkservices']);
-  if (r.status !== 0) return [];
-  return r.stdout.split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('*') && !l.toLowerCase().includes('asterisk'));
-}
-
-function getServers(service) {
-  const r = runNetworksetup(['-getdnsservers', service]);
-  if (r.status !== 0) return [];
-  const lines = r.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-  if (lines.length === 0) return [];
-  if (/aren't any dns servers|no dns server/i.test(r.stdout)) return [];
-  return lines.filter((l) => /^\d{1,3}(\.\d{1,3}){3}$/.test(l));
-}
-
-function setServers(service, ips) {
-  const args = ips && ips.length ? ['-setdnsservers', service, ...ips] : ['-setdnsservers', service, 'Empty'];
-  return runNetworksetup(args).status === 0;
-}
-
 function saveState() {
   if (!STATE) return;
   try { fs.writeFileSync(STATE, JSON.stringify(state, null, 2) + '\n'); } catch (err) { log('error', 'saveState: ' + err.message); }
@@ -230,14 +216,14 @@ function applyDns() {
   loadState();
   let changed = false;
   let failed = false;
-  for (const service of listServices()) {
-    const current = getServers(service);
+  for (const service of dnsops.listServices()) {
+    const current = dnsops.getServers(service);
     const isOurs = current.length === 1 && current[0] === '127.0.0.1';
     if (isOurs) continue;
     if (!(service in state.services) && current.length > 0 && !current.includes('127.0.0.1')) {
       state.services[service] = current;
     }
-    if (setServers(service, ['127.0.0.1'])) changed = true;
+    if (dnsops.setServers(service, ['127.0.0.1'])) changed = true;
     else {
       failed = true;
       log('error', 'could not set DNS on service: ' + service);
@@ -257,18 +243,18 @@ function restoreDns() {
   loadState();
   let changed = false;
   let failed = false;
-  for (const service of listServices()) {
-    const current = getServers(service);
+  for (const service of dnsops.listServices()) {
+    const current = dnsops.getServers(service);
     if (!current.includes('127.0.0.1')) {
       delete state.services[service];
       continue;
     }
     const original = state.services[service];
     if (original && original.length) {
-      if (setServers(service, original)) changed = true;
+      if (dnsops.setServers(service, original)) changed = true;
       else failed = true;
     } else {
-      if (setServers(service, [])) changed = true;
+      if (dnsops.setServers(service, [])) changed = true;
       else failed = true;
     }
     delete state.services[service];
@@ -283,26 +269,7 @@ function restoreDns() {
 }
 
 function discoverUpstream() {
-  const fromState = [];
-  for (const svc of Object.values(state.services || {})) {
-    for (const ip of svc || []) if (ip !== '127.0.0.1' && !fromState.includes(ip)) fromState.push(ip);
-  }
-  if (fromState.length) return fromState;
-
-  // Parse `scutil --dns` for the resolver IPs the system would use normally.
-  const r = spawnSync('/usr/sbin/scutil', ['--dns'], { encoding: 'utf8' });
-  const found = [];
-  if (r.status === 0 && r.stdout) {
-    for (const line of r.stdout.split('\n')) {
-      const m = /^\s*nameserver\[\d+\]\s*:\s*([^\s]+)/.exec(line);
-      if (m) {
-        const ip = m[1].trim();
-        if (ip !== '127.0.0.1' && !ip.startsWith('0.') && !ip.startsWith('255.') && !found.includes(ip)) found.push(ip);
-      }
-    }
-  }
-  if (found.length) return found;
-  return DEFAULT_UPSTREAM;
+  return dnsops.discoverUpstream(state.services, DEFAULT_UPSTREAM);
 }
 
 /* ------------------------------ blocking ----------------------------- */
@@ -335,30 +302,30 @@ function onBlocked(name) {
 // the kill itself runs on every poll while the app stays running.
 const lastAppKillLog = new Map();
 
-// Kill running copies of blocked apps. Scans `ps -axo pid=,command=`, matches
-// exact executable path / basename / argv token (core/apps.js — never a
-// substring), and kills matches with SIGKILL. Runs on every poll while
-// protection is expected, so a blocked app that is (re)launched is killed
+// Kill running copies of blocked apps. Scans the platform process list,
+// matches exact executable path / basename / argv token (core/apps.js — never
+// a substring), and kills matches with SIGKILL/taskkill. Runs on every poll
+// while protection is expected, so a blocked app that is (re)launched is killed
 // within ~1 s and stays stopped. Never touches our own pid or the daemon
 // interpreter (process.execPath); the safety floor below has already stripped
 // any entry pointing at it.
 function enforceAppBlocks() {
   if (!APPS_ENABLED || appBlocklist.length === 0) return;
-  const r = spawnSync('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
-  if (r.status !== 0) {
-    log('error', 'app scan failed: ' + String(r.stderr || r.stdout || '').trim());
+  const processList = procs.list();
+  if (!processList) {
+    log('error', 'app scan failed');
     return;
   }
-  const hits = apps.findBlockedPids(String(r.stdout || '').split('\n'), appBlocklist, {
+  const hits = apps.findBlockedProcesses(processList, appBlocklist, {
     selfPid: process.pid,
     protectedExes: [process.execPath]
   });
   const now = Date.now();
   for (const hit of hits) {
     const key = hit.entry.id;
-    const kill = spawnSync('/bin/kill', ['-9', String(hit.pid)], { encoding: 'utf8' });
-    if (kill.status !== 0) {
-      log('warn', 'could not kill ' + hit.entry.name + ' (pid ' + hit.pid + '): ' + String(kill.stderr || '').trim());
+    const killRes = procs.kill(hit.pid);
+    if (!killRes.ok) {
+      log('warn', 'could not kill ' + hit.entry.name + ' (pid ' + hit.pid + '): ' + String(killRes.error || '').trim());
       continue;
     }
     const last = lastAppKillLog.get(key) || 0;
@@ -394,8 +361,8 @@ let resolverDownReported = false;
 
 // Polled entry point. Runs the full reconcile but never lets iterations
 // overlap: setInterval fires on a fixed cadence regardless of how long the
-// previous run took, and a slow networksetup/spawnSync iteration must not
-// overlap the next one or subprocesses pile up.
+// previous run took, and a slow subprocess iteration (networksetup, scutil,
+// PowerShell, pfctl) must not overlap the next one or subprocesses pile up.
 async function reconcile() {
   if (reconciling) return;
   reconciling = true;

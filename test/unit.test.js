@@ -635,50 +635,56 @@ test('encodeFrame adds a 2-byte length prefix', () => {
   assert.deepStrictEqual([...f], [0, 3, 1, 2, 3]);
 });
 
-console.log('autofill');
-test('autofill plist disables password/address/credit-card autofill', () => {
-  const xml = autofill.plistXml(autofill.BLOCK_POLICIES);
-  for (const k of ['PasswordManagerEnabled', 'AutofillAddressEnabled', 'AutofillCreditCardEnabled', 'AutoFillEnabled']) {
-    assert.ok(xml.includes('<key>' + k + '</key>'), k + ' key present');
-    assert.ok(xml.includes('<' + autofill.BLOCK_POLICIES[k] + '/>'), k + ' set to false');
-  }
-  assert.ok(xml.startsWith('<?xml version="1.0"'));
-});
-
-test('autofill apply/clear writes and removes managed-prefs plists in the configured dir', () => {
-  const dir = tmpDir();
-  const prev = process.env.AUREN_AUTOFILL_DIR;
-  process.env.AUREN_AUTOFILL_DIR = dir;
-  try {
-    const res = autofill.applyAutofillBlock();
-    assert.deepStrictEqual(res.covered, autofill.BROWSERS.map((b) => b.name));
-    assert.deepStrictEqual(res.errors, []);
-    for (const b of autofill.BROWSERS) {
-      assert.ok(fs.existsSync(path.join(dir, b.id + '.plist')), b.id + ' plist exists');
+// The plist writer is macOS (and other non-Windows) only; on win32 the
+// dispatcher returns the registry implementation which has no plistXml.
+if (process.platform === 'win32') {
+  console.log('autofill (mac plist impl; skipped on win32)');
+} else {
+  console.log('autofill');
+  test('autofill plist disables password/address/credit-card autofill', () => {
+    const xml = autofill.plistXml(autofill.BLOCK_POLICIES);
+    for (const k of ['PasswordManagerEnabled', 'AutofillAddressEnabled', 'AutofillCreditCardEnabled', 'AutoFillEnabled']) {
+      assert.ok(xml.includes('<key>' + k + '</key>'), k + ' key present');
+      assert.ok(xml.includes('<' + autofill.BLOCK_POLICIES[k] + '/>'), k + ' set to false');
     }
-    const cleared = autofill.clearAutofillBlock();
-    assert.strictEqual(cleared.covered.length, autofill.BROWSERS.length);
-    for (const b of autofill.BROWSERS) {
-      assert.ok(!fs.existsSync(path.join(dir, b.id + '.plist')), b.id + ' plist removed');
-    }
-  } finally {
-    if (prev === undefined) delete process.env.AUREN_AUTOFILL_DIR; else process.env.AUREN_AUTOFILL_DIR = prev;
-  }
-});
+    assert.ok(xml.startsWith('<?xml version="1.0"'));
+  });
 
-test('autofill reconcile only writes when the desired state changes', () => {
-  const dir = tmpDir();
-  const prev = process.env.AUREN_AUTOFILL_DIR;
-  process.env.AUREN_AUTOFILL_DIR = dir;
-  try {
-    assert.strictEqual(autofill.reconcileAutofill(true).changed, true);
-    assert.strictEqual(autofill.reconcileAutofill(true).changed, false);
-    assert.strictEqual(autofill.reconcileAutofill(false).changed, true);
-    assert.strictEqual(autofill.reconcileAutofill(false).changed, false);
-  } finally {
-    if (prev === undefined) delete process.env.AUREN_AUTOFILL_DIR; else process.env.AUREN_AUTOFILL_DIR = prev;
-  }
-});
+  test('autofill apply/clear writes and removes managed-prefs plists in the configured dir', () => {
+    const dir = tmpDir();
+    const prev = process.env.AUREN_AUTOFILL_DIR;
+    process.env.AUREN_AUTOFILL_DIR = dir;
+    try {
+      const res = autofill.applyAutofillBlock();
+      assert.deepStrictEqual(res.covered, autofill.BROWSERS.map((b) => b.name));
+      assert.deepStrictEqual(res.errors, []);
+      for (const b of autofill.BROWSERS) {
+        assert.ok(fs.existsSync(path.join(dir, b.id + '.plist')), b.id + ' plist exists');
+      }
+      const cleared = autofill.clearAutofillBlock();
+      assert.strictEqual(cleared.covered.length, autofill.BROWSERS.length);
+      for (const b of autofill.BROWSERS) {
+        assert.ok(!fs.existsSync(path.join(dir, b.id + '.plist')), b.id + ' plist removed');
+      }
+    } finally {
+      if (prev === undefined) delete process.env.AUREN_AUTOFILL_DIR; else process.env.AUREN_AUTOFILL_DIR = prev;
+    }
+  });
+
+  test('autofill reconcile only writes when the desired state changes', () => {
+    const dir = tmpDir();
+    const prev = process.env.AUREN_AUTOFILL_DIR;
+    process.env.AUREN_AUTOFILL_DIR = dir;
+    try {
+      assert.strictEqual(autofill.reconcileAutofill(true).changed, true);
+      assert.strictEqual(autofill.reconcileAutofill(true).changed, false);
+      assert.strictEqual(autofill.reconcileAutofill(false).changed, true);
+      assert.strictEqual(autofill.reconcileAutofill(false).changed, false);
+    } finally {
+      if (prev === undefined) delete process.env.AUREN_AUTOFILL_DIR; else process.env.AUREN_AUTOFILL_DIR = prev;
+    }
+  });
+}
 
 /* ------------------------- pf anchor load (fake pfctl) ------------------------ */
 
@@ -734,63 +740,67 @@ function makeFakePfctl() {
   return { dir, rules: path.join(dir, 'rules.txt'), log };
 }
 
-console.log('pf anchor load (fake pfctl)');
+// The anchor-load flow drives the fake pfctl (a bash script), so it only runs
+// where pfctl semantics apply; on win32 applyAnchor is the firewall impl.
+if (process.platform !== 'win32') {
+  console.log('pf anchor load (fake pfctl)');
 
-test('applyAnchor succeeds when pf is already enabled and never runs -e', () => {
-  const f = makeFakePfctl();
-  fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
-  const res = pf.applyAnchor(f.rules);
-  assert.strictEqual(res.ok, true);
-  const calls = fs.readFileSync(f.log, 'utf8');
-  assert.ok(!/^-e$/m.test(calls), 'must not call pfctl -e when pf is already enabled');
-  assert.ok(calls.includes('-F all'), 'must flush the anchor');
-  assert.ok(calls.includes('-f '), 'must load the rules file');
-  assert.ok(calls.includes('-sr'), 'must verify the anchor loaded');
-});
+  test('applyAnchor succeeds when pf is already enabled and never runs -e', () => {
+    const f = makeFakePfctl();
+    fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
+    const res = pf.applyAnchor(f.rules);
+    assert.strictEqual(res.ok, true);
+    const calls = fs.readFileSync(f.log, 'utf8');
+    assert.ok(!/^-e$/m.test(calls), 'must not call pfctl -e when pf is already enabled');
+    assert.ok(calls.includes('-F all'), 'must flush the anchor');
+    assert.ok(calls.includes('-f '), 'must load the rules file');
+    assert.ok(calls.includes('-sr'), 'must verify the anchor loaded');
+  });
 
-test('applyAnchor runs pfctl -e before loading the anchor when pf is disabled', () => {
-  const f = makeFakePfctl();
-  process.env.AUREN_TEST_PFSTATE = 'disabled';
-  fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
-  const res = pf.applyAnchor(f.rules);
-  assert.strictEqual(res.ok, true);
-  const calls = fs.readFileSync(f.log, 'utf8').split('\n').filter(Boolean);
-  const eIdx = calls.indexOf('-e');
-  assert.ok(eIdx !== -1, 'pfctl -e must be attempted when pf is disabled');
-  assert.ok(eIdx < calls.indexOf('-a auren -F all'), 'pfctl -e must come before the flush');
-  assert.ok(eIdx < calls.indexOf('-a auren -f ' + f.rules), 'pfctl -e must come before the load');
-});
+  test('applyAnchor runs pfctl -e before loading the anchor when pf is disabled', () => {
+    const f = makeFakePfctl();
+    process.env.AUREN_TEST_PFSTATE = 'disabled';
+    fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
+    const res = pf.applyAnchor(f.rules);
+    assert.strictEqual(res.ok, true);
+    const calls = fs.readFileSync(f.log, 'utf8').split('\n').filter(Boolean);
+    const eIdx = calls.indexOf('-e');
+    assert.ok(eIdx !== -1, 'pfctl -e must be attempted when pf is disabled');
+    assert.ok(eIdx < calls.indexOf('-a auren -F all'), 'pfctl -e must come before the flush');
+    assert.ok(eIdx < calls.indexOf('-a auren -f ' + f.rules), 'pfctl -e must come before the load');
+  });
 
-test('applyAnchor tolerates -e failing with "pf already enabled"', () => {
-  const f = makeFakePfctl();
-  process.env.AUREN_TEST_PFSTATE = 'disabled';
-  process.env.AUREN_TEST_PF_ALREADY = '1';
-  fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
-  const res = pf.applyAnchor(f.rules);
-  assert.strictEqual(res.ok, true, 'a racing "already enabled" must not fail the load');
-  const calls = fs.readFileSync(f.log, 'utf8');
-  assert.ok(/^-e$/m.test(calls), 'the -e step was attempted');
-  assert.ok(calls.includes('-a auren -F all'), 'the anchor was still flushed');
-  assert.ok(calls.includes('-f '), 'the rules were still loaded');
-});
+  test('applyAnchor tolerates -e failing with "pf already enabled"', () => {
+    const f = makeFakePfctl();
+    process.env.AUREN_TEST_PFSTATE = 'disabled';
+    process.env.AUREN_TEST_PF_ALREADY = '1';
+    fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
+    const res = pf.applyAnchor(f.rules);
+    assert.strictEqual(res.ok, true, 'a racing "already enabled" must not fail the load');
+    const calls = fs.readFileSync(f.log, 'utf8');
+    assert.ok(/^-e$/m.test(calls), 'the -e step was attempted');
+    assert.ok(calls.includes('-a auren -F all'), 'the anchor was still flushed');
+    assert.ok(calls.includes('-f '), 'the rules were still loaded');
+  });
 
-test('applyAnchor still fails on a real -e error (not "already enabled")', () => {
-  const f = makeFakePfctl();
-  process.env.AUREN_TEST_PFSTATE = 'disabled';
-  process.env.AUREN_TEST_PF_E_FAIL = '1';
-  fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
-  const res = pf.applyAnchor(f.rules);
-  assert.strictEqual(res.ok, false);
-  assert.ok(/pfctl -e failed/.test(res.error), 'real -e failures must still surface: ' + res.error);
-});
+  test('applyAnchor still fails on a real -e error (not "already enabled")', () => {
+    const f = makeFakePfctl();
+    process.env.AUREN_TEST_PFSTATE = 'disabled';
+    process.env.AUREN_TEST_PF_E_FAIL = '1';
+    fs.writeFileSync(f.rules, 'pass out proto tcp to port 443\n');
+    const res = pf.applyAnchor(f.rules);
+    assert.strictEqual(res.ok, false);
+    assert.ok(/pfctl -e failed/.test(res.error), 'real -e failures must still surface: ' + res.error);
+  });
 
-test('applyAnchor rejects an empty rules file', () => {
-  const f = makeFakePfctl();
-  fs.writeFileSync(f.rules, '');
-  const res = pf.applyAnchor(f.rules);
-  assert.strictEqual(res.ok, false);
-  assert.ok(/empty rules file/.test(res.error));
-});
+  test('applyAnchor rejects an empty rules file', () => {
+    const f = makeFakePfctl();
+    fs.writeFileSync(f.rules, '');
+    const res = pf.applyAnchor(f.rules);
+    assert.strictEqual(res.ok, false);
+    assert.ok(/empty rules file/.test(res.error));
+  });
+}
 
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

@@ -317,3 +317,11 @@ module.exports = {
   clearAnchor,
   isAnchorLoaded
 };
+
+// Windows: the same pure rule engine + safety floor, but enforcement is
+// Windows Firewall, not pfctl. Swapped in after module.exports is set so
+// pf-win.js can require('./pf') for the shared pure functions without a
+// circular-require deadlock.
+if (process.platform === 'win32') {
+  Object.assign(module.exports, require('./pf-win'));
+}

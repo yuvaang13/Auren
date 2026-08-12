@@ -6,8 +6,10 @@ Auren is a **cooperative guardrail**, not an adversarial security boundary.
 This policy covers defects that undermine the guarantees it *does* claim:
 
 - **fail-closed gating**: turning Protection OFF requires a successful
-  OS-native biometric/passcode check; a failed or cancelled check leaves
-  protection ON, and the unlock itself waits out a 10-second cooldown.
+  OS-native biometric/passcode check (macOS Touch ID / passcode; Windows Hello
+  via UserConsentVerifier, with a UAC elevation prompt as the fallback); a
+  failed or cancelled check leaves protection ON, and the unlock itself waits
+  out a 10-second cooldown.
   Quitting the app while Protection is ON (or fail-closed) is gated the same
   way: quitting would lift protection, so it requires the same OS-native
   check; a failed or cancelled check cancels the quit and protection stays
@@ -27,25 +29,28 @@ This policy covers defects that undermine the guarantees it *does* claim:
   and re-kills them while protection stays ON; the block list is enforced from
   the same signed, fail-closed config as DNS and the firewall;
 - **browser autofill blocking while Protection is ON** (default): the root
-  daemon writes macOS managed-preferences plists for the Chromium-family
-  browsers (Chrome, Chromium, Brave, Edge) forcing `PasswordManagerEnabled`,
-  `AutofillAddressEnabled`, `AutofillCreditCardEnabled`, and `AutoFillEnabled`
-  to `false`, so a browser session an agent controls cannot auto-fill saved
-  passwords, addresses/phone numbers, or credit cards. The plists are written
-  by the root daemon only (unprivileged processes can't delete them while
-  protection is on) and removed on protection OFF; they take effect at browser
-  launch. **Limitation (not a vulnerability of this layer):** the managed
-  policy hooks exist only for the Chromium family — Safari and Firefox are not
-  covered — and an already-running browser session retains its autofill
-  state until restarted;
+  daemon writes the Chromium-family enterprise policies that force
+  `PasswordManagerEnabled`, `AutofillAddressEnabled`,
+  `AutofillCreditCardEnabled`, and `AutoFillEnabled` to `false` — on macOS as
+  managed-preferences plists in `/Library/Managed Preferences/` for Chrome,
+  Chromium, Brave, and Edge, and on Windows as `REG_DWORD 0` values under the
+  vendor `HKLM\Software\Policies\...` roots (written by the SYSTEM daemon with
+  `reg.exe`). The policies are written by the root daemon only (unprivileged
+  processes can't delete them while protection is on) and removed on
+  protection OFF; they take effect at browser launch. **Limitation (not a
+  vulnerability of this layer):** the managed policy hooks exist only for the
+  Chromium family — Safari and Firefox are not covered — and an already-running
+  browser session retains its autofill state until restarted;
 - **OS/terminal-level network blocking**: while Protection is ON the root
-  daemon loads a dedicated pf anchor (`auren`) that blocks ICMP echo, outbound
+  daemon loads a dedicated OS firewall that blocks ICMP echo, outbound
   command ports (SSH/FTP/Telnet/SMB/DoT/…), cloud-metadata IPs, and the known
-  public DoH/DoT endpoint IPs (logging packets it actually drops). Attempts to
+  public DoH/DoT endpoint IPs (logging packets it actually drops). On macOS
+  this is a pf anchor (`auren`); on Windows it is an outbound-BLOCK rule set
+  created with `New-NetFirewallRule` (group `Auren`). Attempts to
   tunnel non-HTTPS protocols over port 443 are additionally flagged and blocked
   by the command classifier (`cmd_suspicious_443`). The daemon must only ever
-  touch its own anchor — never the main pf ruleset, never flushing a
-  pre-existing pf configuration, never disabling pf on teardown — and must load
+  touch its own anchor/rule group — never the main pf ruleset or other
+  firewall rules, never flushing a pre-existing configuration — and must load
   the blocking rules when it cannot verify the signed config (fail-closed),
   matching the DNS deny-all posture. As a root-owned safety floor, these
   terminal/DoH blocks cannot be disabled or allowlisted away while Protection
@@ -54,18 +59,23 @@ This policy covers defects that undermine the guarantees it *does* claim:
   endpoints stripped from any allowlist, `dohHosts` extend-only) even when
   `settings.json` or the signed config has been tampered with or forged;
   `settings.json` itself is HMAC-signed (`settings.sig`) — a mismatch is
-  logged, reset to safe defaults, and surfaced in the UI;
+  logged, reset to safe defaults, and surfaced in the UI. **Honest
+  cross-platform limit:** Windows Firewall exposes no per-rule packet counters
+  via cmdlets, so the `doh_blocked` packet telemetry is macOS-only;
 - **the privacy invariant**: no biometric or credential data ever passes
   through Auren's process — it only consumes pass/fail results from OS APIs;
 - **keystroke shielding while Protection is ON**: Auren's window must be
-  excluded from screen captures (`setContentProtection`), sensitive inputs must
-  render masked, and while the Auren window holds keyboard focus macOS Secure
-  Event Input must be enabled so keyboard-interception processes cannot read
-  the user's keys — and must be released again on blur/window-close/quit so it
-  never breaks other apps' keyboard-observing features. This shields Auren's
-  own surface only; keystrokes typed in other apps are an accepted limitation
-  (an agent with Screen Recording or Accessibility permission can still read
-  those), not a vulnerability of this layer;
+  excluded from screen captures (`setContentProtection`, available on both
+  platforms), sensitive inputs must render masked, and while the Auren window
+  holds keyboard focus macOS Secure Event Input must be enabled so
+  keyboard-interception processes cannot read the user's keys — and must be
+  released again on blur/window-close/quit so it never breaks other apps'
+  keyboard-observing features. Secure Event Input is macOS-only; the Windows
+  claim is screen-capture exclusion + masked inputs only (the badge title
+  reflects this). This shields Auren's own surface only; keystrokes typed in
+  other apps are an accepted limitation (an agent with Screen Recording or
+  Accessibility permission can still read those), not a vulnerability of this
+  layer;
 - **accidental collection or transmission of private data** (the activity log
   must never contain more than domain, timestamp, outcome, and a classifier
   type label — never the underlying values);

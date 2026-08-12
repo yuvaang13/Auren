@@ -1,0 +1,45 @@
+# Auren — electron-builder configuration.
+#
+# The app has zero runtime npm dependencies (only Node builtins + Electron +
+# local src files), so `files` is just the source tree.
+appId: app.auren.guardrail
+productName: auren
+copyright: Copyright © Auren Guardrail
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - src/**/*
+  - package.json
+
+asar: true
+
+mac:
+  category: public.app-category.utilities
+  icon: build/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: true
+  shortcutName: auren
+  artifactName: ${productName}-${version}-setup.${ext}
+
+dmg:
+  artifactName: ${productName}-${version}.${ext}
