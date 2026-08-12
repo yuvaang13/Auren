@@ -222,16 +222,22 @@ test('secure store rejects a wrong key (tamper/corruption)', () => {
   assert.throws(() => store.loadSecureStore(dir, wrong), /bad decrypt|auth|error/i);
 });
 
-test('ensurePermissions tightens a loosened file to 0600', () => {
-  const dir = tmpDir();
-  const file = path.join(dir, 'loose.txt');
-  fs.writeFileSync(file, 'x', { mode: 0o644 });
-  const changed = store.ensurePermissions(file);
-  assert.ok(changed);
-  const st = fs.statSync(file);
-  assert.strictEqual(st.mode & 0o077, 0);
-  assert.ok(!store.ensurePermissions(file), 'second call should be a no-op');
-});
+// chmod tightening is a POSIX behavior; on win32 the ACL model scopes files
+// under %APPDATA% to the owning user so ensurePermissions is a no-op.
+if (process.platform === 'win32') {
+  console.log('secure store (permissions impl; skipped on win32)');
+} else {
+  test('ensurePermissions tightens a loosened file to 0600', () => {
+    const dir = tmpDir();
+    const file = path.join(dir, 'loose.txt');
+    fs.writeFileSync(file, 'x', { mode: 0o644 });
+    const changed = store.ensurePermissions(file);
+    assert.ok(changed);
+    const st = fs.statSync(file);
+    assert.strictEqual(st.mode & 0o077, 0);
+    assert.ok(!store.ensurePermissions(file), 'second call should be a no-op');
+  });
+}
 
 console.log('policy');
 test('policy requires auth for sensitive signals by default', () => {
