@@ -547,6 +547,21 @@ body.keystroke-shield .shield-masked {
   border-radius: 13px;
   background: var(--surface-2);
 }
+.beta-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.1);
+  border-radius: 4px;
+  line-height: 1.4;
+}
 .switch.small { width: 44px; height: 25px; }
 .switch.small .slider::before { width: 19px; height: 19px; left: 2px; top: 2px; }
 .switch.small input:checked + .slider::before { transform: translateX(19px); }
