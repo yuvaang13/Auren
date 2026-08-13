@@ -135,6 +135,7 @@ let daemonBusy = false;
 // flip the firewall on.
 const AUTOPROTECT_POLL_MS = 1000;
 const AUTO_PROTECT_FAST_RECHECK_MS = 400;
+const AUTO_PROTECT_STARTUP_GRACE_MS = 60 * 1000;
 let autoProtectLastJson = '';
 let autoProtectEngagedBy = [];
 let lastAutoProtectSessions = [];
@@ -151,6 +152,7 @@ let autoProtectSnoozedUntil = {};
 let autoProtectSeenPids = new Set();
 let autoProtectFastTimer = null;
 let autoProtectFastMode = false;
+let autoProtectStartedAt = 0;
 
 function clearOffCooldown() {
   if (offCooldownTimer) { clearTimeout(offCooldownTimer); offCooldownTimer = null; }
@@ -835,6 +837,11 @@ async function checkAutoProtect() {
     if (confirmed.length === 0) return;
     if (blockState.mode === 'on' || blockState.failClosed) return;
 
+    // Startup grace period: don't auto-engage (or prompt) for the first minute
+    // after the app launches, even if an AI agent is detected. Gives the user
+    // time to set up before protection engages on its own.
+    if (Date.now() - autoProtectStartedAt < AUTO_PROTECT_STARTUP_GRACE_MS) return;
+
     const engage = autoprotect.shouldEngage({
       mode: blockState.mode,
       failClosed: blockState.failClosed,
@@ -864,6 +871,7 @@ async function checkAutoProtect() {
 }
 
 function startAutoProtect() {
+  autoProtectStartedAt = Date.now();
   checkAutoProtect();
   setInterval(checkAutoProtect, AUTOPROTECT_POLL_MS);
 }
