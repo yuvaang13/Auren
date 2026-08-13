@@ -12,6 +12,60 @@ agent can't quietly undo it.
 > documented below. Read [What this does NOT do yet](#what-this-does-not-do-yet)
 > to see exactly where it stands.
 
+## Why Auren — the last mile that LLM guardrails don't cover
+
+The LLM guardrail vendors — OpenAI's safety systems, Anthropic, NVIDIA NeMo
+Guardrails, Guardrails AI, rebuff, and the rest — operate at the
+**prompt/response layer**: they decide whether a prompt or a model's output is
+acceptable *inside the model conversation*. Necessary — but an agent's work
+doesn't end at the response. The dangerous part is the moment the agent
+**touches the user's machine**: opening a browser, running a shell command,
+submitting a form, filling saved credentials, exfiltrating a key.
+
+Auren operates at the **endpoint/OS layer** — the last mile where agents
+actually act. Enforcement sits *below* every browser, every app, and the
+terminal, so it applies no matter which model produced the instruction, which
+framework orchestrated it, or how the agent got its orders:
+
+| Layer | What Auren enforces |
+|---|---|
+| **DNS** | Blocked domains → `NXDOMAIN` in every app and browser, including headless ones |
+| **Firewall** | Command ports, DoH/DoT endpoints, cloud-metadata IPs blocked at the OS |
+| **Process** | Blocked apps killed at launch and kept stopped, system-wide |
+| **Autofill** | Saved passwords, addresses, and cards can't be filled by a browser |
+| **Gates** | Sensitive data and OS commands require your fingerprint |
+
+A prompt/response guardrail can only *flag* "the agent shouldn't exfiltrate the
+AWS credentials." Only an endpoint layer can make the exfiltration fail: the
+DNS lookup returns nothing, the `nc` process is killed at the firewall, and the
+OS command gate blocks the pipeline before it runs.
+
+**Why Auren is the better end of the stack:**
+
+- **Model- and framework-agnostic.** Auren doesn't care which LLM or agent
+  framework is in play. Headless browsers, separate windows, CLI agents — all
+  resolve through the same system DNS and hit the same layers.
+- **It closes the enforcement gap.** A policy an agent can argue with is a
+  policy it can argue around. A DNS `NXDOMAIN`, a killed process, and a
+  biometric gate don't negotiate — protection lives in the OS, not in a
+  conversation.
+- **Layered, fail-closed defense in depth.** DNS, firewall, process, autofill,
+  and OS-command gates stack together — and if Auren can't verify its own
+  enforcement, every surface refuses by default.
+- **One policy, one switch.** Sites, apps, commands, autofill, and sensitive
+  data all sit behind the same biometric-gated Protection Mode — nothing
+  per-tool to configure or drift.
+- **Complements, not competes with, model guardrails.** Run both: a
+  prompt/response guardrail sets intent; Auren enforces the outcome on the
+  machine.
+
+This is what 2026 agent-safety buyers — enterprise IT and security teams — are
+starting to ask for: not just "what the model says," but "what happens on the
+endpoints agents run on." Auren today ships that enforcement surface — a
+loopback API for agents, a signed, tamper-evident policy snapshot, and
+system-wide coverage — the foundation a managed, deployable platform for
+fleets is built from.
+
 ## What this actually does
 
 When **Protection Mode is ON**, Auren points your computer's DNS at a tiny local
