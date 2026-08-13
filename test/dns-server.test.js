@@ -11,6 +11,7 @@ const assert = require('assert');
 const crypto = require('crypto');
 const dgram = require('dgram');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -153,6 +154,8 @@ async function daemonTest() {
       AUREN_DNS_ENABLED: '0',
       AUREN_PF_ENABLED: '0',
       AUREN_APPS_ENABLED: '1',
+      // Never touch the real system HTTPS proxy / port 42792 in test mode.
+      AUREN_PROXY_ENABLED: '0',
       AUREN_PORT: String(port),
       // mac managed-prefs plists are the only tested autofill mechanism; on
       // Windows keep the daemon's registry policy hook out of the way.
@@ -276,6 +279,132 @@ async function daemonTest() {
   }
 }
 
+/* --------------------- port-53 conflict (test mode) --------------------- */
+
+// A second daemon that can't bind its DNS port must say so in the heartbeat
+// (dnsConflict + activity entry) instead of silently running without DNS
+// enforcement — this is what surfaces the "port 53 taken" degraded banner.
+async function portConflictTest() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auren-conflict-'));
+  const cfgFile = path.join(dir, 'config.json');
+  const keyFile = path.join(dir, 'auren.key');
+  const hbFile = path.join(dir, 'heartbeat.json');
+  const actFile = path.join(dir, 'activity.jsonl');
+  const stateFile = path.join(dir, 'state.json');
+  const port = 55000 + (process.pid % 500);
+  const key = crypto.randomBytes(32);
+  fs.writeFileSync(keyFile, key, { mode: 0o600 });
+  config.writeSignedConfig(cfgFile, { version: 1, mode: 'on', blocklist: [], failClosed: false, appBlocklist: [] }, key);
+
+  // Squat on the daemon's DNS port (UDP + TCP) so its resolver can't bind.
+  const udp = dgram.createSocket('udp4');
+  const tcp = net.createServer();
+  await new Promise((res, rej) => { udp.once('error', rej); udp.bind(port, '127.0.0.1', res); });
+  await new Promise((res, rej) => { tcp.once('error', rej); tcp.listen(port, '127.0.0.1', res); });
+
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'src', 'dns', 'daemon.js')], {
+    env: Object.assign({}, process.env, {
+      AUREN_CONFIG: cfgFile,
+      AUREN_KEY: keyFile,
+      AUREN_HEARTBEAT: hbFile,
+      AUREN_ACTIVITY: actFile,
+      AUREN_STATE: stateFile,
+      AUREN_DAEMON_LOG: path.join(dir, 'daemon.log'),
+      AUREN_DNS_ENABLED: '0',
+      AUREN_PF_ENABLED: '0',
+      AUREN_APPS_ENABLED: '0',
+      AUREN_PROXY_ENABLED: '0',
+      AUREN_AUTOFILL_ENABLED: '0',
+      AUREN_PORT: String(port)
+    }),
+    stdio: 'ignore'
+  });
+
+  try {
+    await sleep(1800);
+    const hb = JSON.parse(fs.readFileSync(hbFile, 'utf8'));
+    assert.ok(hb.dnsConflict, 'heartbeat must report a DNS port conflict');
+    assert.strictEqual(hb.dnsConflict.port, port);
+    assert.ok(hb.dnsConflict.pid, 'conflict must identify the owning pid');
+    assert.ok(hb.dnsConflict.name, 'conflict must name the owning process');
+    const act = fs.readFileSync(actFile, 'utf8');
+    assert.ok(act.includes('dns_conflict'), 'the conflict must land in the activity log');
+  } finally {
+    try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    await sleep(500);
+    try { udp.close(); } catch { /* ignore */ }
+    try { tcp.close(); } catch { /* ignore */ }
+  }
+}
+
+/* --------------------- proxy port fallback (test mode) ------------------- */
+
+// When the default HTTPS-proxy port is taken, the daemon must bind the next
+// free port and report it (heartbeat proxyPort + the PAC served on that port),
+// instead of silently giving up on HTTPS host blocking.
+async function proxyFallbackTest() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auren-proxyfallback-'));
+  const cfgFile = path.join(dir, 'config.json');
+  const keyFile = path.join(dir, 'auren.key');
+  const hbFile = path.join(dir, 'heartbeat.json');
+  const actFile = path.join(dir, 'activity.jsonl');
+  const stateFile = path.join(dir, 'state.json');
+  const proxyPort = 56000 + (process.pid % 400);
+  const dnsPort = proxyPort + 100;
+  const key = crypto.randomBytes(32);
+  fs.writeFileSync(keyFile, key, { mode: 0o600 });
+  config.writeSignedConfig(cfgFile, { version: 1, mode: 'on', blocklist: [], failClosed: false, appBlocklist: [] }, key);
+
+  // Occupy the default proxy port.
+  const squatter = net.createServer();
+  await new Promise((res, rej) => { squatter.once('error', rej); squatter.listen(proxyPort, '127.0.0.1', res); });
+
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'src', 'dns', 'daemon.js')], {
+    env: Object.assign({}, process.env, {
+      AUREN_CONFIG: cfgFile,
+      AUREN_KEY: keyFile,
+      AUREN_HEARTBEAT: hbFile,
+      AUREN_ACTIVITY: actFile,
+      AUREN_STATE: stateFile,
+      AUREN_DAEMON_LOG: path.join(dir, 'daemon.log'),
+      AUREN_DNS_ENABLED: '0',
+      AUREN_PF_ENABLED: '0',
+      AUREN_APPS_ENABLED: '0',
+      AUREN_AUTOFILL_ENABLED: '0',
+      AUREN_PROXY_ENABLED: '1',
+      AUREN_PROXY_NET_ENABLED: '0',
+      AUREN_PROXY_PORT: String(proxyPort),
+      AUREN_PORT: String(dnsPort)
+    }),
+    stdio: 'ignore'
+  });
+
+  try {
+    await sleep(2000);
+    const hb = JSON.parse(fs.readFileSync(hbFile, 'utf8'));
+    assert.strictEqual(hb.proxy, true, 'proxy must be active');
+    assert.strictEqual(hb.proxyPort, proxyPort + 1, 'proxy must fall back to the next free port');
+
+    // The PAC the daemon points the system proxy at is served on that port and
+    // embeds it, so browsers route HTTPS through the right socket.
+    const pac = await new Promise((resolve) => {
+      const sock = net.connect(proxyPort + 1, '127.0.0.1', () => sock.write('GET /proxy.pac HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'));
+      let data = '';
+      sock.on('data', (c) => { data += c.toString('latin1'); });
+      sock.on('error', () => resolve(''));
+      sock.on('end', () => resolve(data));
+      sock.on('close', () => resolve(data));
+      setTimeout(() => { try { sock.destroy(); } catch {} resolve(data); }, 3000);
+    });
+    assert.ok(pac.includes('FindProxyForURL'), 'PAC served on the fallback port');
+    assert.ok(pac.includes('PROXY 127.0.0.1:' + (proxyPort + 1)), 'PAC embeds the fallback port');
+  } finally {
+    try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    await sleep(500);
+    try { squatter.close(); } catch { /* ignore */ }
+  }
+}
+
 (async () => {
   console.log('DNS resolver + daemon integration tests');
   await before();
@@ -349,6 +478,8 @@ async function daemonTest() {
   });
 
   await daemonTest();
+  await test('daemon: reports a port-53 conflict in the heartbeat', () => portConflictTest());
+  await test('daemon: HTTPS proxy falls back to the next free port', () => proxyFallbackTest());
   console.log('');
   console.log(passed + ' passed, ' + failed + ' failed');
   process.exit(failed === 0 ? 0 : 1);

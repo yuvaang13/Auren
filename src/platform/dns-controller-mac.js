@@ -26,7 +26,7 @@ const DAEMON_LIB = '/usr/local/lib/auren';
 // app compares the installed daemon's version against this and re-runs the
 // installer when they disagree, so a running launchd job never silently keeps
 // old behavior after an app update. Keep in sync with daemon.js DAEMON_VERSION.
-const DAEMON_VERSION = 15;
+const DAEMON_VERSION = 17;
 
 function isDaemonInstalled() {
   return fs.existsSync(PLIST);
@@ -103,7 +103,7 @@ function buildInstallerScript(opts) {
     'SPOOL=' + shellQuote(spool),
     'SRC=' + shellQuote(src),
     'mkdir -p "$LIB" "$SPOOL"',
-    'cp "$SRC/dns-message.js" "$SRC/resolver.js" "$SRC/daemon.js" "$SRC/cache.js" "$SRC/pf.js" "$SRC/domains.js" "$SRC/config.js" "$SRC/activity.js" "$SRC/apps.js" "$SRC/autofill.js" "$SRC/autofill-mac.js" "$SRC/dnsops.js" "$SRC/dnsops-mac.js" "$SRC/procs.js" "$SRC/procs-mac.js" "$LIB/"',
+    'cp "$SRC/dns-message.js" "$SRC/resolver.js" "$SRC/daemon.js" "$SRC/cache.js" "$SRC/pf.js" "$SRC/sni.js" "$SRC/server.js" "$SRC/domains.js" "$SRC/config.js" "$SRC/activity.js" "$SRC/apps.js" "$SRC/autofill.js" "$SRC/autofill-mac.js" "$SRC/dnsops.js" "$SRC/dnsops-mac.js" "$SRC/proxyops.js" "$SRC/proxyops-mac.js" "$SRC/procs.js" "$SRC/procs-mac.js" "$LIB/"',
     'chmod 755 "$LIB/daemon.js"',
     'cat > ' + shellQuote(PLIST) + ' <<PLIST',
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -210,10 +210,14 @@ function stageDaemonFiles() {
   for (const f of ['daemon.js', 'resolver.js', 'dns-message.js', 'cache.js', 'pf.js']) {
     fs.copyFileSync(path.join(dnsDir, f), path.join(dir, f));
   }
+  const proxyDir = path.join(__dirname, '..', 'proxy');
+  for (const f of ['sni.js', 'server.js']) {
+    fs.copyFileSync(path.join(proxyDir, f), path.join(dir, f));
+  }
   for (const f of ['domains.js', 'config.js', 'activity.js', 'apps.js']) {
     fs.copyFileSync(path.join(coreDir, f), path.join(dir, f));
   }
-  for (const f of ['autofill.js', 'autofill-mac.js', 'dnsops.js', 'dnsops-mac.js', 'procs.js', 'procs-mac.js']) {
+  for (const f of ['autofill.js', 'autofill-mac.js', 'dnsops.js', 'dnsops-mac.js', 'proxyops.js', 'proxyops-mac.js', 'procs.js', 'procs-mac.js']) {
     fs.copyFileSync(path.join(platformDir, f), path.join(dir, f));
   }
   return dir;

@@ -20,7 +20,8 @@ const path = require('path');
 //        errors)
 // outcome: for block -> 'blocked' | 'allowed'; for toggle -> 'on' | 'off' |
 //          'off_pending' (verified, waiting out the cooldown) | 'off_failed' |
-//          'off_cancelled'; for agent -> 'allowed' | 'blocked' | 'logged';
+//          'off_cancelled' | 'auto_engaged' | 'auto_engage_failed';
+//          for agent -> 'allowed' | 'blocked' | 'logged';
 //          for command -> 'allowed' | 'blocked' | 'logged';
 //          for daemon -> 'started' | 'stopped' | 'error' | 'dns_applied' |
 //          'dns_restored' | 'pf_applied' | 'pf_cleared' | 'pf_failed' |
@@ -64,6 +65,8 @@ function toPlainText(entry) {
       if (entry.outcome === 'off_failed') return `Protection-off request did not pass verification \u00b7 ${time}`;
       if (entry.outcome === 'off_cancelled') return `Protection-off request cancelled \u00b7 ${time}`;
       if (entry.outcome === 'on_failed') return `Protection-on request did not finish (background service setup declined) \u00b7 ${time}`;
+      if (entry.outcome === 'auto_engaged') return `Protection turned on automatically (AI agent activity detected${entry.note ? ': ' + entry.note : ''}) \u00b7 ${time}`;
+      if (entry.outcome === 'auto_engage_failed') return `Auto-protect could not engage${entry.note ? ': ' + entry.note : ''} \u00b7 ${time}`;
       return `Protection change \u00b7 ${time}`;
     case 'agent':
       if (entry.outcome === 'allowed') return `Agent form submission allowed${entry.note ? ' (' + entry.note + ')' : ''} \u00b7 ${time}`;

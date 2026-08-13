@@ -98,6 +98,7 @@ function ruleLayout(opts) {
     .map((h) => String(h).trim())
     .filter(isValidHostEntry);
   const dohBlock = (opts && opts.dohBlock) !== false;
+  const proxyBlock = (opts && opts.proxyBlock) !== false;
   let dohHosts = (Array.isArray(opts && opts.dohHosts) ? opts.dohHosts : [])
     .map((h) => String(h).trim())
     .filter(isValidHostEntry);
@@ -105,7 +106,7 @@ function ruleLayout(opts) {
   // Header comments, then the two lo0 passes, then allowlisted ports, then
   // allowlisted hosts, then the DoH block rules.
   const dohStart = HEADER_COMMENTS.length + 2 + allowPorts.length + allowHosts.length;
-  return { allowPorts, allowHosts, dohBlock, dohHosts, dohStart };
+  return { allowPorts, allowHosts, dohBlock, dohHosts, proxyBlock, dohStart };
 }
 
 // Index range (into buildAnchorRules' output) of the DoH block rules, or null
@@ -154,6 +155,7 @@ function cidrContainsIp(cidr, ip) {
 // or forced). Pure and unit-testable.
 function safetyFloor(opts) {
   const inTerminalBlock = (opts && opts.terminalBlock) !== false;
+  const inProxyBlock = (opts && opts.proxyBlock) !== false;
   const inAllowPorts = normalizePorts(opts && opts.allowPorts);
   const inAllowHosts = (Array.isArray(opts && opts.allowHosts) ? opts.allowHosts : [])
     .map((h) => String(h).trim())
@@ -166,7 +168,12 @@ function safetyFloor(opts) {
   const dohUnion = Array.from(new Set(DEFAULT_DOH_HOSTS.concat(inDohHosts)));
   const protectedHosts = BLOCKED_HOSTS.concat(dohUnion);
 
-  const outAllowPorts = inAllowPorts.filter((p) => !BLOCKED_PORTS.includes(p));
+  // While HTTPS host blocking (proxyBlock) is enforced, QUIC (UDP 443) must
+  // stay blocked so HTTPS falls back to TCP and therefore through the proxy.
+  // A port-443 allow entry would pass UDP 443 too and silently bypass that.
+  // The floor always re-forces proxyBlock on while protection is on, so 443 is
+  // dropped from the allowlist unconditionally here.
+  const outAllowPorts = inAllowPorts.filter((p) => !BLOCKED_PORTS.includes(p) && p !== 443);
   const outAllowHosts = inAllowHosts.filter((h) => {
     if (protectedHosts.includes(h)) return false;
     return !protectedHosts.some((ip) => cidrContainsIp(h, ip));
@@ -174,7 +181,7 @@ function safetyFloor(opts) {
   const outDohHosts = dohUnion;
 
   const changed =
-    !inTerminalBlock || !inDohBlock ||
+    !inTerminalBlock || !inDohBlock || !inProxyBlock ||
     inAllowPorts.length !== outAllowPorts.length ||
     inAllowHosts.length !== outAllowHosts.length ||
     JSON.stringify(inDohHosts) !== JSON.stringify(outDohHosts);
@@ -182,6 +189,7 @@ function safetyFloor(opts) {
   return {
     terminalBlock: true,
     dohBlock: true,
+    proxyBlock: true,
     allowPorts: outAllowPorts,
     allowHosts: outAllowHosts,
     dohHosts: outDohHosts,
@@ -191,7 +199,7 @@ function safetyFloor(opts) {
 
 // Pure rule generation. Returns an array of pf anchor rule lines.
 function buildAnchorRules(opts) {
-  const { allowPorts, allowHosts, dohBlock, dohHosts } = ruleLayout(opts);
+  const { allowPorts, allowHosts, dohBlock, dohHosts, proxyBlock } = ruleLayout(opts);
   const rules = HEADER_COMMENTS.slice();
   rules.push('pass in  on lo0 all');
   rules.push('pass out on lo0 all');
@@ -203,6 +211,10 @@ function buildAnchorRules(opts) {
   rules.push('pass out proto { tcp udp } to port 53');
   rules.push('pass out proto tcp to port 80');
   rules.push('pass out proto tcp to port 443');
+  // QUIC (HTTP/3) runs over UDP 443 and bypasses both DNS and the HTTPS proxy.
+  // While HTTPS host blocking is on, UDP 443 is dropped so HTTPS falls back to
+  // TCP — which the PAC routes through the blocking proxy.
+  if (proxyBlock) rules.push('block out proto udp to port 443');
   rules.push('block out proto icmp');
   rules.push('block out proto icmp6');
   if (BLOCKED_PORTS.length) rules.push('block out proto { tcp udp } to port { ' + BLOCKED_PORTS.join(' ') + ' }');

@@ -47,6 +47,14 @@ else
   fail "no DoH block rules found in the anchor — is the v7 daemon installed?"
 fi
 
+# 1c. QUIC (UDP 443) dropped while HTTPS host blocking is on, so browsers fall
+# back to TCP 443 and therefore through the blocking proxy (daemon v16+).
+if printf '%s\n' "$RULES" | grep -q 'block out proto udp to port 443'; then
+  pass "QUIC (UDP 443) is blocked while proxy protection is on"
+else
+  fail "no UDP-443 block rule in the anchor — HTTPS could bypass the proxy via HTTP/3"
+fi
+
 # 2. ping blocked?
 if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
   fail "ping 8.8.8.8 succeeded — ICMP is NOT blocked"

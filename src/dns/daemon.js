@@ -47,9 +47,18 @@ function loadPlatform(name) {
   }
 }
 
+// Proxy modules live in src/proxy/ in the repo and flat in the install dir.
+function loadProxy(name) {
+  try { return require(path.join(__dirname, name)); } catch (err) {
+    if (err.code !== 'MODULE_NOT_FOUND') throw err;
+    return require(path.join(__dirname, '..', 'proxy', name));
+  }
+}
+
 const { DnsResolver, DEFAULT_UPSTREAM } = require(path.join(__dirname, 'resolver.js'));
 const { flushDnsCacheAsync } = require(path.join(__dirname, 'cache.js'));
 const pf = require(path.join(__dirname, 'pf.js'));
+const proxyServer = loadProxy('server.js');
 const { domainMatches } = load('domains.js');
 const { readConfigFile, verifyData } = load('config.js');
 const { makeEntry, appendActivity } = load('activity.js');
@@ -60,6 +69,9 @@ const autofill = loadPlatform('autofill.js');
 const dnsops = loadPlatform('dnsops.js');
 // Platform process listing/killing for the app blocker.
 const procs = loadPlatform('procs.js');
+// Platform system-proxy push/restore (networksetup on macOS, WinINET hives on
+// Windows) — the daemon never calls into the OS directly for proxy config.
+const proxyops = loadPlatform('proxyops.js');
 
 function logActivity(entry) {
   if (!ACTIVITY) return;
@@ -94,7 +106,20 @@ const PF_ENABLED = String(argValue('AUREN_PF_ENABLED', '1')) !== '0';
 const PF_RULES = argValue('AUREN_PF_RULES', path.join(__dirname, 'pf.rules'));
 const APPS_ENABLED = String(argValue('AUREN_APPS_ENABLED', '1')) !== '0';
 const AUTOFILL_ENABLED = String(argValue('AUREN_AUTOFILL_ENABLED', '1')) !== '0';
+const PROXY_ENABLED = String(argValue('AUREN_PROXY_ENABLED', '1')) !== '0';
+const PROXY_PORT = parseInt(argValue('AUREN_PROXY_PORT', '42792'), 10);
+// Whether the daemon also points the OS system proxy at its PAC. Kept separate
+// from PROXY_ENABLED so test mode can run the blocking proxy itself without
+// touching the machine's real network settings.
+const PROXY_NET_ENABLED = String(argValue('AUREN_PROXY_NET_ENABLED', '1')) !== '0';
 const DAEMON_LOG = argValue('AUREN_DAEMON_LOG', '/tmp/auren-daemon.log');
+
+// System proxy points at this PAC; the proxy server serves it on its own port.
+// `proxyPort`/`pacUrl` are the ACTUAL values in effect: if the default port is
+// taken by another process, the proxy binds the first free port above it (up to
+// +16) and the PAC URL follows, so the system proxy never points at a dead port.
+let proxyPort = PROXY_PORT;
+let pacUrl = 'http://127.0.0.1:' + proxyPort + '/proxy.pac';
 
 // Fast tick. The dominant cost per tick is the ps app-block scan (~35 ms);
 // all subprocess-heavy DNS/firewall work is deferred until the config changes
@@ -110,7 +135,7 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 15;
+const DAEMON_VERSION = 17;
 
 let mode = 'off';
 let blocklist = [];
@@ -129,8 +154,18 @@ let terminalBlock = true;
 let terminalAllowlist = { ports: [], hosts: [] };
 let dohBlock = true;
 let dohHosts = [];
+// HTTPS hostname blocking (loopback SNI proxy + QUIC drop), tied to Protection
+// Mode. The safety floor forces it on while protection is on.
+let proxyBlock = true;
+let proxyActive = false;
+let proxyStartReported = false;
+let proxySniReported = false;
 let autofillBlock = true;
 let pfActive = false;
+// Port-53 conflict: set when the resolver can't bind because another process
+// owns the port. Surfaced in the heartbeat so the app can warn instead of
+// silently running without DNS enforcement.
+let dnsConflict = null;
 let lastAnchorJson = '';
 let pfFailReported = false;
 // Dedup key for the safety-floor activity entry (see reconcile below): only
@@ -187,7 +222,7 @@ function loadIntegrityKey() {
 // unprivileged app must be able to read it. It contains no secrets.
 function writeHeartbeat() {
   if (!HEARTBEAT) return;
-  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, version: DAEMON_VERSION, mode, failClosed, pf: pfActive, integrityOk: !failClosed }) + '\n';
+  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, version: DAEMON_VERSION, mode, failClosed, pf: pfActive, proxy: proxyActive, proxyPort: proxyActive ? proxyPort : null, dnsConflict, integrityOk: !failClosed }) + '\n';
   try { fs.writeFileSync(HEARTBEAT, body, { mode: 0o644 }); } catch (err) { log('error', 'heartbeat write failed: ' + err.message); }
 }
 
@@ -216,11 +251,16 @@ function applyDns() {
   loadState();
   let changed = false;
   let failed = false;
+  // "Is 127.0.0.1 ours?" is only true when OUR resolver actually owns port 53.
+  // If another process squats on 53, an existing 127.0.0.1 DNS entry belongs to
+  // THAT resolver, not us — treat it as a foreign value to snapshot and restore,
+  // otherwise turning protection off would clear the user's DNS to nothing.
+  const dnsOurs = !!(resolver && resolver.running);
   for (const service of dnsops.listServices()) {
     const current = dnsops.getServers(service);
-    const isOurs = current.length === 1 && current[0] === '127.0.0.1';
+    const isOurs = dnsOurs && current.length === 1 && current[0] === '127.0.0.1';
     if (isOurs) continue;
-    if (!(service in state.services) && current.length > 0 && !current.includes('127.0.0.1')) {
+    if (!(service in state.services) && current.length > 0 && !(dnsOurs && current.includes('127.0.0.1'))) {
       state.services[service] = current;
     }
     if (dnsops.setServers(service, ['127.0.0.1'])) changed = true;
@@ -414,6 +454,7 @@ async function reconcileInner() {
     terminalAllowlist = cfg.terminalAllowlist || { ports: [], hosts: [] };
     dohBlock = cfg.dohBlock !== false;
     dohHosts = Array.isArray(cfg.dohHosts) ? cfg.dohHosts : [];
+    proxyBlock = cfg.proxyBlock !== false;
     autofillBlock = cfg.autofillBlock !== false;
   } else {
     // Fail-closed: we can't trust the config, so block everything. App
@@ -425,6 +466,7 @@ async function reconcileInner() {
     terminalAllowlist = { ports: [], hosts: [] };
     dohBlock = true;
     dohHosts = [];
+    proxyBlock = true;
     autofillBlock = true;
   }
 
@@ -438,13 +480,15 @@ async function reconcileInner() {
       allowPorts: terminalAllowlist.ports,
       allowHosts: terminalAllowlist.hosts,
       dohBlock,
-      dohHosts
+      dohHosts,
+      proxyBlock
     });
     terminalBlock = floor.terminalBlock;
     terminalAllowlist = { ports: floor.allowPorts, hosts: floor.allowHosts };
     dohBlock = floor.dohBlock;
     dohHosts = floor.dohHosts;
-    const floorJson = JSON.stringify([floor.changed, floor.allowPorts, floor.allowHosts, floor.dohHosts]);
+    proxyBlock = floor.proxyBlock;
+    const floorJson = JSON.stringify([floor.changed, floor.allowPorts, floor.allowHosts, floor.dohHosts, floor.proxyBlock]);
     if (floor.changed && floorJson !== lastFloorJson) {
       lastFloorJson = floorJson;
       logActivity(makeEntry('daemon', 'security_floor', null, 'enforced minimum-safety floor on configured terminal/DoH settings'));
@@ -471,6 +515,10 @@ async function reconcileInner() {
       logActivity(makeEntry('daemon', 'started'));
       log('info', 'resolver listening on 127.0.0.1:' + PORT);
       resolverDownReported = false;
+      if (dnsConflict) {
+        dnsConflict = null;
+        logActivity(makeEntry('daemon', 'dns_conflict_cleared'));
+      }
     } catch (err) {
       resolver = null;
       if (!resolverDownReported) {
@@ -478,7 +526,77 @@ async function reconcileInner() {
         resolverDownReported = true;
       }
       log('error', 'resolver start failed: ' + err.message);
+      // Name the port owner so the desktop app can tell the user exactly what
+      // is squatting on 53 instead of a generic "port busy".
+      try {
+        const owner = dnsops.portOwner(PORT);
+        const key = JSON.stringify(owner);
+        const changed = JSON.stringify(dnsConflict) !== key;
+        dnsConflict = owner ? { port: PORT, pid: owner.pid, name: owner.name } : { port: PORT, pid: null, name: null };
+        if (changed) {
+          logActivity(makeEntry('daemon', 'dns_conflict', null, owner && owner.name ? owner.name + ' (pid ' + owner.pid + ') is listening on 53' : 'unidentified process is listening on 53'));
+          log('warn', 'port ' + PORT + ' is owned by ' + (owner ? (owner.name + ' (pid ' + owner.pid + ')') : 'an unidentified process'));
+        }
+      } catch (e) { log('error', 'port-53 owner probe failed: ' + e.message); }
     }
+  }
+
+  // HTTPS hostname blocking: run the loopback SNI proxy whenever protection is
+  // on (or fail-closed) and the proxy layer is enabled. It never terminates
+  // TLS; it only reads CONNECT hosts / ClientHello SNI and refuses blocked
+  // hostnames (fail-closed on anything unreadable). A bind failure is logged
+  // and retried each poll — never fatal, and the system proxy is only pointed
+  // at it once it is actually listening.
+  const wantProxy = PROXY_ENABLED && proxyBlock && (mode === 'on' || failClosed);
+  if (wantProxy && !proxyActive) {
+    // Bind the first free port in [PROXY_PORT, PROXY_PORT+16]. A conflict on
+    // the default (42792) shouldn't silently kill HTTPS host blocking — the
+    // PAC it serves embeds whichever port actually bound.
+    let bound = null;
+    for (let p = PROXY_PORT; p <= PROXY_PORT + 16 && !bound; p++) {
+      try {
+        bound = await proxyServer.start({
+          port: p,
+          blockFn: isBlocked,
+          onBlocked,
+          onUnreadable: () => {
+            if (!proxySniReported) {
+              logActivity(makeEntry('daemon', 'proxy_sni_unreadable', null, 'HTTPS tunnel with unreadable hostname refused (fail-closed)'));
+              proxySniReported = true;
+            }
+          }
+        });
+      } catch (err) {
+        if (p === PROXY_PORT + 16) {
+          log('error', 'proxy start failed on all ports ' + PROXY_PORT + '..' + (PROXY_PORT + 16) + ': ' + err.message);
+        } else {
+          log('warn', 'proxy port ' + p + ' busy (' + err.message + '), trying ' + (p + 1));
+        }
+      }
+    }
+    if (bound) {
+      proxyPort = bound.port;
+      pacUrl = 'http://127.0.0.1:' + proxyPort + '/proxy.pac';
+      proxyActive = true;
+      proxyStartReported = false;
+      proxySniReported = false;
+      logActivity(makeEntry('daemon', 'proxy_started', null, 'HTTPS host blocking on 127.0.0.1:' + proxyPort));
+      log('info', 'proxy listening on 127.0.0.1:' + proxyPort);
+    } else {
+      proxyActive = false;
+      if (!proxyStartReported) {
+        logActivity(makeEntry('daemon', 'error', null, 'could not start HTTPS blocking proxy (port ' + PROXY_PORT + ' busy?)'));
+        proxyStartReported = true;
+      }
+    }
+  } else if (!wantProxy && proxyActive) {
+    await proxyServer.stop();
+    proxyActive = false;
+    proxySniReported = false;
+    proxyPort = PROXY_PORT;
+    pacUrl = 'http://127.0.0.1:' + proxyPort + '/proxy.pac';
+    logActivity(makeEntry('daemon', 'proxy_stopped'));
+    log('info', 'proxy stopped');
   }
 
   // Cheap change detection (no subprocesses): the app writes config.json only
@@ -518,6 +636,25 @@ async function reconcileInner() {
     const res = (mode === 'on' || failClosed) ? applyDns() : restoreDns();
     dnsChanged = res.changed;
     networkFailed = res.failed;
+
+    // System proxy: point HTTPS at the loopback blocking proxy while it is
+    // actually listening (otherwise leave the system proxy alone — HTTPS that
+    // falls through still hits the DNS layer). Restore the user's original
+    // proxy config when protection is off or the proxy is unavailable.
+    const wantProxyNet = PROXY_NET_ENABLED && PROXY_ENABLED && proxyActive && proxyBlock && (mode === 'on' || failClosed);
+    const proxyRes = wantProxyNet ? proxyops.applyProxy(state, pacUrl) : proxyops.clearProxy(state, pacUrl);
+    if (proxyRes.changed) {
+      if (wantProxyNet) {
+        logActivity(makeEntry('daemon', 'proxy_applied'));
+        log('info', 'system HTTPS proxy pointed at ' + pacUrl);
+      } else {
+        logActivity(makeEntry('daemon', 'proxy_restored'));
+        log('info', 'system proxy restored');
+      }
+    }
+    if (proxyRes.failed) {
+      log('error', 'system proxy reconcile failed (will retry)');
+    }
   }
 
   const modeChanged = mode !== lastMode;
@@ -539,7 +676,7 @@ async function reconcileInner() {
   // window) and retried on the next poll; they must never affect DNS
   // enforcement.
   const osBlock = PF_ENABLED && (mode === 'on' || failClosed) && terminalBlock;
-  const rules = osBlock ? pf.buildAnchorRules({ allowPorts: terminalAllowlist.ports, allowHosts: terminalAllowlist.hosts, dohBlock, dohHosts }) : [];
+  const rules = osBlock ? pf.buildAnchorRules({ allowPorts: terminalAllowlist.ports, allowHosts: terminalAllowlist.hosts, dohBlock, dohHosts, proxyBlock }) : [];
   const rulesJson = JSON.stringify(rules);
   if (osBlock && rulesJson !== lastAnchorJson) {
     try {
@@ -648,7 +785,9 @@ function shutdown() {
     log('info', 'fail-closed: leaving DNS pointed at local resolver (deny-all while down)');
   } else {
     restoreDns();
+    try { proxyops.clearProxy(state, pacUrl); } catch (err) { log('error', 'proxy restore failed: ' + err.message); }
   }
+  if (proxyActive) proxyServer.stop().catch(() => {});
   if (resolver) resolver.stop().catch(() => {});
   process.exit(0);
 }

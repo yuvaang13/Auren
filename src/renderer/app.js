@@ -3,7 +3,7 @@
 const api = window.auren;
 const $ = (id) => document.getElementById(id);
 
-let state = { mode: 'off', blocklist: [], appBlocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0, degraded: false, terminalBlock: true, dohBlock: true, vmsDetected: [], settingsTampered: false, keystrokeShield: false };
+let state = { mode: 'off', blocklist: [], appBlocklist: [], activity: [], onboardingDone: true, enforcement: false, platform: 'darwin', modeCooldownUntil: 0, degraded: false, terminalBlock: true, dohBlock: true, vmsDetected: [], settingsTampered: false, keystrokeShield: false, autoProtect: { enabled: true, engagedBy: [] } };
 let busy = false;
 let countdownTimer = null;
 
@@ -103,6 +103,19 @@ function render() {
   toggle.disabled = busy || inCooldown;
 
   $('degraded-banner').classList.toggle('hidden', !state.degraded);
+  if (state.degraded && state.dnsConflict) {
+    const who = state.dnsConflict.name
+      ? state.dnsConflict.name + ' (pid ' + state.dnsConflict.pid + ')'
+      : 'another process';
+    $('degraded-text').textContent = 'Auren\u2019s DNS resolver could not start: ' + who + ' is already using port 53. Domain blocking is off until that process is stopped and protection is toggled. Auren is failing closed \u2014 nothing it gates will be allowed through in the meantime.';
+  } else {
+    $('degraded-text').textContent = 'Auren\u2019s background service isn\u2019t responding, so it can\u2019t verify that blocked sites are unreachable. Auren is failing closed \u2014 nothing it gates will be allowed through until the service recovers.';
+  }
+
+  const autoProtect = state.autoProtect || { enabled: true, engagedBy: [] };
+  $('autoprotect-toggle').checked = !!autoProtect.enabled;
+  const apEngaged = on && Array.isArray(autoProtect.engagedBy) && autoProtect.engagedBy.length > 0;
+  $('autoprotect-banner').classList.toggle('hidden', !apEngaged);
 
   const shieldOn = !!state.keystrokeShield;
   $('keystroke-shield-badge').classList.toggle('hidden', !shieldOn);
@@ -263,6 +276,36 @@ async function init() {
       busy = false;
       render();
     }
+  });
+
+  // Auto-protect: the toggle is instant and not busy-blocking (it only writes
+  // settings.json), and a confirmed prompt engages protection like the toggle.
+  $('autoprotect-toggle').addEventListener('change', async (ev) => {
+    const enabled = ev.target.checked;
+    await api.setAutoProtect({ enabled });
+    state.autoProtect = Object.assign({}, state.autoProtect || {}, { enabled });
+    render();
+  });
+
+  $('autoprotect-engage').addEventListener('click', async () => {
+    $('autoprotect-prompt').classList.add('hidden');
+    busy = true;
+    render();
+    try {
+      await api.confirmAutoProtect();
+    } finally {
+      busy = false;
+    }
+  });
+
+  $('autoprotect-dismiss').addEventListener('click', () => {
+    $('autoprotect-prompt').classList.add('hidden');
+  });
+
+  api.onAutoProtectPrompt((tools) => {
+    const names = Array.isArray(tools) && tools.length ? tools.join(', ') : 'AI tooling';
+    $('autoprotect-prompt-tools').textContent = 'Turn protection on now (' + names + ')?';
+    $('autoprotect-prompt').classList.remove('hidden');
   });
 
   $('add-form').addEventListener('submit', async (ev) => {

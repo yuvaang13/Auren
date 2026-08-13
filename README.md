@@ -55,16 +55,26 @@ OS command gate blocks the pipeline before it runs.
 - **One policy, one switch.** Sites, apps, commands, autofill, and sensitive
   data all sit behind the same biometric-gated Protection Mode — nothing
   per-tool to configure or drift.
+- **Auto-protect (beta).** Auren watches for known AI-agent activity — headless
+  or remote-debugging browsers, Playwright/Puppeteer/Selenium drivers, CLI
+  agents (Claude Code, Codex, Goose, OpenCode, and more), Cursor/Windsurf — and
+  turns Protection Mode ON itself when it spots a session running while you're
+  unprotected. It only ever *raises* protection; turning it back off still
+  requires your fingerprint or passcode. Extend the signature list via
+  `autoProtect.tools` in settings.json.
 - **Complements, not competes with, model guardrails.** Run both: a
   prompt/response guardrail sets intent; Auren enforces the outcome on the
   machine.
 
-This is what 2026 agent-safety buyers — enterprise IT and security teams — are
-starting to ask for: not just "what the model says," but "what happens on the
-endpoints agents run on." Auren today ships that enforcement surface — a
-loopback API for agents, a signed, tamper-evident policy snapshot, and
-system-wide coverage — the foundation a managed, deployable platform for
-fleets is built from.
+This is what everyday computer users are starting to need in 2026: AI agents
+run on *your* machine now — reading your browser, opening your terminal,
+running commands. The question is no longer just "what the model says," but
+"what happens on my computer." Auren is a consumer product built for that:
+a single switch that keeps the agent working while making sure it can't reach
+the sites, apps, and data you didn't give it. It ships today as a standalone
+desktop app and is planned to become a subscription SaaS — your policy and
+block lists synced to your Auren account across all the machines you use,
+with a cloud dashboard to manage them.
 
 ## What this actually does
 
@@ -100,6 +110,13 @@ resolver. (macOS: `dscacheutil`/`killall mDNSResponder`; Windows:
 When **Protection Mode is OFF**, your DNS goes back to normal and everything is
 reachable as usual.
 
+HTTPS is a special case: its URLs are encrypted inside TLS, so DNS-level
+blocking can't see *which* site a connection targets. While protection is ON,
+Auren also points the system proxy at a loopback CONNECT proxy that reads only
+the hostname (`CONNECT` authority or the TLS **SNI**) and refuses blocked hosts
+with `403` — no decryption, no MITM, never (see
+[HTTPS hostname blocking](#https-hostname-blocking-loopback-sni-proxy)).
+
 This is a deliberate architecture change from Auren's first version, which was
 a Chrome extension. An extension only watches one browser window — if an AI
 agent opens its own separate or headless browser, the extension can't see it.
@@ -120,8 +137,10 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
   run through a *classifier + auth-gating checkpoint* (`agent:inspect-action`,
   see below). But the bridge is **cooperative**: it does not sit invisibly in
   the network path, and an agent that doesn't route through it is covered by
-  the DNS/firewall layers instead. Auren provides the detection, the policy,
-  and the native-auth gate — it is not a proxy or a browser bridge.
+  the DNS/firewall layers instead. The HTTPS hostname proxy blocks *which host*
+  a tunnel targets but never reads content — Auren provides the detection, the
+  policy, and the native-auth gate; it is not a content proxy or a browser
+  bridge.
 - **It does not detect humans vs. AI in real time.** Protection is a manual
   on/off switch. Auren does not try to tell whether a given lookup came from
   you or from an agent.
@@ -155,8 +174,9 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
   internet: a client pointed at an obscure or self-hosted DoH server that
   isn't on the list still bypasses DNS blocking. Extend or replace the list
   with `dohHosts` in `settings.json`. Auren also can't read TLS SNI at the
-  firewall, so it can't tell *which* HTTPS host an arbitrary 443 connection
-  targets — see the terminal section below for what it does about that.
+  firewall, so the OS layer alone can't tell *which* HTTPS host an arbitrary
+  443 connection targets — the HTTPS hostname proxy covers that for
+  proxy-honoring clients (see the HTTPS blocking section below).
 - **It can't force a browser's own cache to drop instantly.** Auren flushes the
   macOS system DNS cache on every mode/block-list change, which covers Safari
   and anything that resolves through the OS. Browsers that keep their *own*
@@ -172,10 +192,12 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
   SSH/FTP/Telnet/DoT and other command ports, cloud-metadata IPs, and known
   DoH endpoints — but `curl`/`wget` to an arbitrary HTTPS host uses the same
   port 443 as normal browsing, so a port rule can't stop it without breaking
-  the web. The command gate closes part of that gap: it flags non-HTTPS
-  protocols explicitly aimed at port 443 (`ssh -p 443`, `stunnel`,
+  the web. The HTTPS hostname proxy (see above) closes part of that gap for
+  proxy-honoring clients: the blocked hostname is refused even though the
+  traffic is plain port-443 HTTPS. The command gate covers the rest: it flags
+  non-HTTPS protocols explicitly aimed at port 443 (`ssh -p 443`, `stunnel`,
   `openssl s_client`, raw `nc`/`socat` to `:443`) and blocks them by default.
-  What it can't do is see raw bytes inside a legitimate HTTPS connection.
+  What Auren never does is decrypt — a blocked HTTPS host is refused, not read.
 - **It does not stop local code execution that makes no network calls.** The
   firewall and the command gate only cover network-capable commands. An agent
   running `rm -rf`, `osascript`, or compiling and running a binary locally is
@@ -298,6 +320,25 @@ Auren's default on any verification failure is **block, not allow**:
   machine. If the block list is copied and the copy is served by an attacker
   that also runs the daemon process, Auren can't tell the difference.
 
+### 5. Known conflicts (DNS port 53 and proxy port 42792)
+
+Auren's resolver binds **UDP/TCP 53** and the HTTPS-blocking proxy binds
+**127.0.0.1:42792**. Both are also common targets for other software:
+
+- **Port 53.** A local DNS server (AdGuard Home, Pi-hole on this machine, dnsmasq,
+  a VPN's split-tunnel resolver) that already owns port 53 stops Auren's resolver
+  from binding. The daemon detects this and reports it in the heartbeat, the
+  activity log, and the UI's degraded banner — naming the owning process and pid —
+  instead of silently running without domain blocking. Protection is **fail
+  closed** meanwhile: nothing Auren gates gets a pass. Fix: stop the other
+  process (or reconfigure it to another port), then toggle Protection off and on.
+  `sudo bash scripts/check-ports.sh` (macOS) or `.\scripts\check-ports.ps1`
+  (Windows) names whoever owns port 53 and 42792.
+- **Port 42792.** If another process already listens on the proxy port, the
+  proxy binds the **next free port** (42793, 42794, … up to +16) and the PAC
+  URL follows it, so HTTPS hostname blocking keeps working — the heartbeat's
+  `proxyPort` reports the actual port.
+
 ## Sensitive-action policy (outgoing form data)
 
 Auren ships a rule-based classifier (`src/core/sensitive.js`) that detects
@@ -395,6 +436,43 @@ The honest boundary: Layer 2 only helps when the agent's commands actually go
 through Auren's bridge (see the next section). A raw terminal session Auren
 can't see is covered by Layer 1 (the pf firewall) instead. And no layer here
 stops local, network-free code execution — that needs the agent sandboxed.
+
+## HTTPS hostname blocking (loopback SNI proxy)
+
+DNS blocking can't see HTTPS: the request line and URL are encrypted inside
+TLS. Auren closes that gap with a **loopback CONNECT proxy** — no decryption,
+no MITM, ever. It reads only what a proxy is entitled to read: the `CONNECT`
+hostname and, for IP-direct tunnels, the **SNI** of the ClientHello. Blocked
+hostnames are refused; everything else is piped through byte-for-byte.
+
+- **How it's wired.** While Protection is ON, Auren points the system proxy at
+  a PAC it serves from the same port (`http://127.0.0.1:42792/proxy.pac`).
+  The PAC routes only `https:` through the proxy; everything else stays
+  DIRECT, so non-HTTPS traffic isn't forced through a pointless failure point.
+  At the same time the OS firewall drops **UDP 443** (QUIC/HTTP-3), so HTTPS
+  falls back to TCP 443 and therefore through the proxy — otherwise QUIC would
+  silently bypass hostname blocking entirely.
+- **Domain CONNECTs** are decided on the CONNECT authority hostname; a blocked
+  host gets an HTTP `403 Forbidden` and the tunnel never opens.
+- **IP CONNECTs** (`CONNECT 1.2.3.4:443`) carry no hostname, so the proxy
+  answers `200` and then reads the ClientHello SNI to decide. **Fail-closed:**
+  if the SNI can't be read (non-TLS bytes, truncated handshake, nothing after
+  16 KB), the tunnel is refused rather than risk passing a blocked host.
+- **No MITM.** A refused tunnel is refused — nothing is decrypted, no
+  certificate is presented, no content ever passes through Auren. This is
+  enforcement by refusal, which is what makes it honest: Auren can block HTTPS
+  to a site without ever being able to read it.
+- **Same block list, same posture.** The proxy calls the daemon's own block
+  decision function, so it enforces the same signed config as DNS — and it
+  fails closed with the same integrity checks. If the proxy can't start or the
+  system proxy can't be set, HTTPS that falls through still hits the DNS layer.
+- **Honest limits.** The proxy only sees traffic that honors the system proxy
+  (browsers and most apps do). A client that explicitly bypasses the proxy
+  falls back to DNS + firewall coverage, and TCP 443 to arbitrary hosts still
+  works — the proxy blocks *hostnames*, not the port. DNS-over-HTTPS from a
+  blocked page still fails at the firewall (see above), and the daemon's
+  activity log records blocked tunnels (`proxy` entries) and unreadable-SNI
+  refusals, which stay throttled like every other log line.
 
 ## Agent bridge (HTTP API)
 

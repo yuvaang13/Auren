@@ -106,4 +106,25 @@ function isEnforcing() {
   return parseInt(String(r.stdout).trim(), 10) > 0;
 }
 
-module.exports = { listServices, getServers, setServers, discoverUpstream, isEnforcing, listServicesCmd, getServersCmd, setServersCmd, discoverUpstreamCmd, isEnforcingCmd };
+function portOwnerCmd(port) {
+  return 'Get-NetTCPConnection -LocalPort ' + port + ' -State Listen -ErrorAction SilentlyContinue | '
+    + 'ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; '
+    + 'if ($p) { "{0}:{1}" -f $p.Id, $p.ProcessName } } | Select-Object -First 1';
+}
+
+// Parse one "pid:ProcessName" line from the port-owner probe. Pure.
+function parsePortOwnerLine(line) {
+  const m = /^(\d+):(.+)$/.exec(String(line || '').trim());
+  if (!m) return null;
+  return { pid: parseInt(m[1], 10), name: m[2] };
+}
+
+// Identify the process listening on a TCP port (names a port-53 conflict when
+// our resolver can't bind). Returns { pid, name } or null.
+function portOwner(port) {
+  const r = runPS(portOwnerCmd(port));
+  if (r.status !== 0) return null;
+  return parsePortOwnerLine(parseLines(r.stdout)[0]);
+}
+
+module.exports = { listServices, getServers, setServers, discoverUpstream, isEnforcing, portOwner, parsePortOwnerLine, listServicesCmd, getServersCmd, setServersCmd, discoverUpstreamCmd, isEnforcingCmd, portOwnerCmd };

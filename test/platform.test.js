@@ -34,6 +34,21 @@ function test(name, fn) {
 
 console.log('platform logic tests');
 
+test('dnsops: port-owner parsing (macOS lsof -F pcn)', () => {
+  const out = 'p1045\ncCoreAudioD\nn*:53\np1\nclaunchd\nn*:53\n';
+  assert.deepStrictEqual(dnsopsMac.parseLsofPcn(out), { pid: 1045, name: 'CoreAudioD' });
+  assert.strictEqual(dnsopsMac.parseLsofPcn(''), null);
+  assert.strictEqual(dnsopsMac.parseLsofPcn('n*:53\n'), null);
+  assert.deepStrictEqual(dnsopsMac.parseLsofPcn('p42\ncfoo\n'), { pid: 42, name: 'foo' });
+});
+
+test('dnsops: port-owner parsing (Windows PID:name lines)', () => {
+  assert.deepStrictEqual(dnsopsWin.parsePortOwnerLine('1234:dnslookup.exe'), { pid: 1234, name: 'dnslookup.exe' });
+  assert.strictEqual(dnsopsWin.parsePortOwnerLine(''), null);
+  assert.strictEqual(dnsopsWin.parsePortOwnerLine('garbage'), null);
+  assert.ok(dnsopsWin.portOwnerCmd(53).includes('Get-NetTCPConnection -LocalPort 53 -State Listen'));
+});
+
 test('pf-win: shared rule engine emits the same rule lines everywhere', () => {
   const rules = pf.buildAnchorRules({ allowPorts: [2222], allowHosts: ['10.0.0.5'], dohBlock: true, dohHosts: ['1.1.1.1'] });
   assert.ok(rules.includes('block out proto icmp'));
@@ -60,17 +75,20 @@ test('pf-win: parseRuleLines keeps only block rules', () => {
   assert.ok(kinds.includes('port:udp'));
   assert.ok(kinds.includes('host:tcp'));
   assert.ok(kinds.includes('host:udp'));
-  // pass lines (loopback, DNS, 80/443, allowlist) must never become rules
+  // pass lines (loopback, DNS, 80, allowlist) must never become rules
   assert.ok(!parsed.some((r) => r.remotePort && r.remotePort.includes(53)));
   assert.ok(!parsed.some((r) => r.remotePort && r.remotePort.includes(80)));
-  assert.ok(!parsed.some((r) => r.remotePort && r.remotePort.includes(443)));
   assert.ok(!parsed.some((r) => r.remotePort && r.remotePort.includes(2222)));
   assert.ok(!parsed.some((r) => r.remoteAddress === '10.0.0.5'));
+  // QUIC (UDP 443) is blocked while proxy protection is on, but TCP 443 stays
+  // passable so HTTPS can reach the blocking proxy.
+  assert.ok(parsed.some((r) => r.proto === 'udp' && r.remotePort && r.remotePort.includes(443)), 'UDP 443 blocked (QUIC)');
+  assert.ok(!parsed.some((r) => r.proto === 'tcp' && r.remotePort && r.remotePort.includes(443)), 'TCP 443 must stay passable');
 });
 
 test('pf-win: blocked ports survive the translation intact', () => {
   const parsed = pfWin.parseRuleLines(pf.buildAnchorRules({}));
-  const portRule = parsed.find((r) => r.remotePort);
+  const portRule = parsed.find((r) => r.remotePort && pf.BLOCKED_PORTS.every((p) => r.remotePort.includes(p)));
   assert.ok(portRule, 'a port-block rule exists');
   for (const p of pf.BLOCKED_PORTS) assert.ok(portRule.remotePort.includes(p), 'port ' + p + ' blocked');
   // allowlist carving is already prevented by the safetyFloor; here the floor

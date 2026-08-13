@@ -454,7 +454,7 @@ test('safetyFloor strips allowlisted built-in blocked ports', () => {
   assert.ok(!f.allowPorts.includes(853), 'DoT must stay blocked');
   assert.ok(!f.allowPorts.includes(5900), 'VNC must stay blocked');
   assert.ok(f.allowPorts.includes(8443), 'extra ports pass through');
-  assert.ok(f.allowPorts.includes(443), '443 is not a built-in blocked port');
+  assert.ok(!f.allowPorts.includes(443), '443 must stay dropped so QUIC stays blocked (proxy protection)');
 });
 
 test('safetyFloor strips allowlisted metadata / DoH hosts', () => {

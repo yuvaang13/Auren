@@ -21,7 +21,7 @@ const crypto = require('crypto');
 const { normalizeDomain, validateBlockDomain } = require('./domains');
 const { normalizeAppBlocklist } = require('./apps');
 
-const DEFAULT_CONFIG = Object.freeze({ version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], autofillBlock: true });
+const DEFAULT_CONFIG = Object.freeze({ version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], proxyBlock: true, autofillBlock: true });
 const SIG_SUFFIX = '.sig';
 
 // Keep only the shape of the allowlist; strict IP/CIDR + port validation
@@ -67,6 +67,7 @@ function readConfigFile(file) {
       terminalAllowlist: normalizeAllowlist(parsed.terminalAllowlist),
       dohBlock: parsed.dohBlock !== false,
       dohHosts: normalizeDohHosts(parsed.dohHosts),
+      proxyBlock: parsed.proxyBlock !== false,
       autofillBlock: parsed.autofillBlock !== false
     };
   } catch (err) {
@@ -74,7 +75,7 @@ function readConfigFile(file) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       try { fs.writeFileSync(file + '.corrupt', String(raw || '') + '\n', { flag: 'a' }); } catch {}
     }
-    return { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], autofillBlock: true };
+    return { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], proxyBlock: true, autofillBlock: true };
   }
 }
 
@@ -91,6 +92,7 @@ function writeConfigFile(file, cfg) {
     terminalAllowlist: normalizeAllowlist(cfg.terminalAllowlist),
     dohBlock: cfg.dohBlock !== false,
     dohHosts: normalizeDohHosts(cfg.dohHosts),
+    proxyBlock: cfg.proxyBlock !== false,
     autofillBlock: cfg.autofillBlock !== false
   }, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(tmp, file);

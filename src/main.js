@@ -37,6 +37,8 @@ const config = require('./core/config');
 const activity = require('./core/activity');
 const store = require('./core/store');
 const agentgate = require('./core/agentgate');
+const agentdetect = require('./core/agentdetect');
+const autoprotect = require('./core/autoprotect');
 const pf = require('./dns/pf');
 const virt = require('./core/virt');
 const httpBridge = require('./bridge/http');
@@ -46,6 +48,7 @@ const { quitRequiresAuth } = require('./core/quit');
 const dnsController = require('./platform/dns-controller');
 const appResolver = require('./platform/app-resolver');
 const { requireAuthentication, requireNativeAuth } = require('./platform/biometrics');
+const procs = require('./platform/procs');
 const shield = require('./core/shield');
 const paths = require('./platform/paths');
 
@@ -98,7 +101,7 @@ let offCooldownUntil = 0;
 let forceQuit = false;
 
 // The canonical, main-process-owned block state.
-let blockState = { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], autofillBlock: true, lock: { state: 'locked', unlockExpiry: 0 } };
+let blockState = { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], proxyBlock: true, autofillBlock: true, lock: { state: 'locked', unlockExpiry: 0 } };
 let storeIntegrityKey = null;
 
 // True when enforcement can't be trusted (daemon silent, tampered/corrupt
@@ -121,6 +124,17 @@ const HEARTBEAT_STALE_MS = 8000;
 const WATCHDOG_GRACE_MS = 12000;
 const STARTED_AT = Date.now();
 let daemonBusy = false;
+
+// Auto-protect (see src/core/agentdetect.js + autoprotect.js). While protection
+// is OFF, a live AI-agent session engages it automatically. One-directional:
+// it can only raise protection; turning it off is always the biometric-gated
+// user path, and a detected session that disappears never turns protection off.
+const AUTOPROTECT_POLL_MS = 2000;
+let autoProtectLastJson = '';
+let autoProtectEngagedBy = [];
+let lastAutoProtectSessions = [];
+let autoProtectPromptAt = 0;
+let autoProtectBusy = false;
 
 function clearOffCooldown() {
   if (offCooldownTimer) { clearTimeout(offCooldownTimer); offCooldownTimer = null; }
@@ -362,6 +376,14 @@ function effectiveAutofillBlock() {
   return readSettings().autofillBlock !== false;
 }
 
+// HTTPS hostname blocking (the loopback SNI proxy + QUIC drop) is tied to
+// Protection Mode and ON by default. settings.json can disable it
+// (proxyBlock: false); the daemon's safety floor re-forces it while
+// protection is ON, exactly like terminalBlock/dohBlock.
+function effectiveProxyBlock() {
+  return readSettings().proxyBlock !== false;
+}
+
 function effectiveDohHosts() {
   const s = readSettings().dohHosts;
   if (Array.isArray(s) && s.length) {
@@ -393,6 +415,7 @@ function normalizeLoadedState(loaded) {
     terminalAllowlist: allowlist,
     dohBlock: loaded.dohBlock !== false,
     dohHosts: Array.isArray(loaded.dohHosts) ? Array.from(new Set(loaded.dohHosts.map((h) => String(h).trim()).filter(Boolean))) : [],
+    proxyBlock: loaded.proxyBlock !== false,
     autofillBlock: loaded.autofillBlock !== false,
     lock: { state: 'locked', unlockExpiry: 0 }
   };
@@ -424,6 +447,7 @@ function persist() {
   const terminalAllowlist = effectiveTerminalAllowlist();
   const dohBlock = effectiveDohBlock();
   const dohHosts = effectiveDohHosts();
+  const proxyBlock = effectiveProxyBlock();
   const autofillBlock = effectiveAutofillBlock();
   store.saveSecureStore(USER_DATA, storeIntegrityKey, {
     version: 1,
@@ -435,6 +459,7 @@ function persist() {
     terminalAllowlist,
     dohBlock,
     dohHosts,
+    proxyBlock,
     autofillBlock,
     lock: blockState.lock
   });
@@ -448,6 +473,7 @@ function persist() {
     terminalAllowlist,
     dohBlock,
     dohHosts,
+    proxyBlock,
     autofillBlock
   }, storeIntegrityKey);
 }
@@ -481,7 +507,7 @@ function ensureFiles() {
     // — we can't trust whatever was in there. Preserve the corrupt file for
     // inspection, then start deny-all (mode ON + failClosed).
     try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.corrupt'); } catch { /* best-effort */ }
-    blockState = { version: 1, mode: 'on', blocklist: [], appBlocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], autofillBlock: true, lock: { state: 'locked', unlockExpiry: 0 } };
+    blockState = { version: 1, mode: 'on', blocklist: [], appBlocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], proxyBlock: true, autofillBlock: true, lock: { state: 'locked', unlockExpiry: 0 } };
     degraded = true;
     logActivity(activity.makeEntry('daemon', 'integrity_failed', null, 'encrypted store could not be verified: ' + (loadError && loadError.message)));
     notifyDegraded('auren could not verify its encrypted block list and has failed closed. Nothing will be allowed through until you review it.');
@@ -515,12 +541,29 @@ function getState() {
     terminalBlock: effectiveTerminalBlock(),
     dohBlock: effectiveDohBlock(),
     dohHosts: effectiveDohHosts(),
+    proxyBlock: effectiveProxyBlock(),
+    proxyActive: !!(lastHeartbeat && lastHeartbeat.proxyActive),
+    proxyPort: lastHeartbeat && lastHeartbeat.proxyActive ? (lastHeartbeat.proxyPort || 42792) : null,
+    dnsConflict: lastHeartbeat && lastHeartbeat.dnsConflict ? lastHeartbeat.dnsConflict : null,
     autofillBlock: effectiveAutofillBlock(),
     vmsDetected: virt.runningVirtualization(),
     settingsTampered: settingsTampered,
     keystrokeShield: shield.keystrokeShieldActive(blockState),
     agentBridge: bridgeInfo,
+    autoProtect: autoProtectState(),
     lock: blockState.lock
+  };
+}
+
+// Effective auto-protect settings plus what a live scan is seeing right now,
+// so the UI can show the toggle state and the "auto-engaged" banner.
+function autoProtectState() {
+  const ap = autoprotect.normalizeAutoProtect(readSettings().autoProtect);
+  return {
+    enabled: ap.enabled,
+    mode: ap.mode,
+    engagedBy: autoProtectEngagedBy.slice(),
+    sessions: lastAutoProtectSessions.map((s) => ({ pid: s.pid, tool: s.tool }))
   };
 }
 
@@ -600,6 +643,8 @@ function liftProtectionOnQuit() {
       blockState.mode = 'off';
       blockState.failClosed = false;
       blockState.lock = { state: 'locked', unlockExpiry: 0 };
+      autoProtectLastJson = '';
+      autoProtectEngagedBy = [];
       persist();
       logActivity(activity.makeEntry('toggle', 'off', null, 'app quit — protection lifted, DNS restored'));
     }
@@ -613,12 +658,18 @@ function liftProtectionOnQuit() {
 // The daemon writes a heartbeat every 2s. If we miss enough of them, or the
 // daemon reports its own integrity as bad, enforcement is assumed compromised
 // and the app degrades (fail-closed surfaces refuse; user gets a notification).
+let lastHeartbeat = null;
 function checkHeartbeat() {
   const expected = blockState.mode === 'on' || blockState.failClosed;
   let hb = null;
   try { hb = JSON.parse(fs.readFileSync(HEARTBEAT_FILE, 'utf8')); } catch { /* no heartbeat yet */ }
+  lastHeartbeat = hb;
   const fresh = !!hb && typeof hb.ts === 'number' && (Date.now() - hb.ts) < HEARTBEAT_STALE_MS && hb.integrityOk !== false;
-  const next = expected ? !fresh : false;
+  // A port-53 conflict means the daemon is alive but its DNS resolver never
+  // bound, so domain blocking silently does nothing — that's degraded even
+  // though the heartbeat itself is fresh.
+  const conflict = expected && !!(hb && hb.dnsConflict && hb.dnsConflict.port === 53);
+  const next = expected ? (!fresh || conflict) : false;
   const was = degraded;
   const inGrace = daemonBusy || (Date.now() - STARTED_AT) < WATCHDOG_GRACE_MS;
   // During the grace window a missing heartbeat is expected (install in flight
@@ -626,8 +677,14 @@ function checkHeartbeat() {
   // daemon recovers. Once the window passes, a stale heartbeat degrades.
   degraded = next ? (inGrace ? was : true) : false;
   if (next && !was && !inGrace) {
-    logActivity(activity.makeEntry('daemon', 'enforcement_degraded'));
-    notifyDegraded('Auren\u2019s background service stopped responding. Protection is degraded until it recovers; nothing gated by Auren will be allowed through in the meantime.');
+    if (conflict && hb && hb.dnsConflict) {
+      const who = hb.dnsConflict.name ? hb.dnsConflict.name + ' (pid ' + hb.dnsConflict.pid + ')' : 'another process';
+      logActivity(activity.makeEntry('daemon', 'enforcement_degraded', null, 'port 53 conflict with ' + who));
+      notifyDegraded('Auren\u2019s DNS resolver could not start: ' + who + ' is already using port 53. Domain blocking is off until that process is stopped and protection is toggled; nothing gated by Auren will be allowed through in the meantime.');
+    } else {
+      logActivity(activity.makeEntry('daemon', 'enforcement_degraded'));
+      notifyDegraded('Auren\u2019s background service stopped responding. Protection is degraded until it recovers; nothing gated by Auren will be allowed through in the meantime.');
+    }
   } else if (!next && was) {
     logActivity(activity.makeEntry('daemon', 'enforcement_restored'));
   }
@@ -659,6 +716,100 @@ function maybeRecoverDaemon() {
 function startWatchdog() {
   checkHeartbeat();
   setInterval(checkHeartbeat, WATCHDOG_MS);
+}
+
+/* ------------------------------ auto-protect --------------------------- */
+
+// Engage protection (the same path as flipping the toggle ON). Extracted from
+// the mode:set handler so auto-protect shares exactly one implementation.
+// Returns { ok, cancelled, error, mode } — same shape as the IPC response.
+async function engageProtection() {
+  clearOffCooldown();
+  if (!dnsController.isDaemonInstalled() || !dnsController.isDaemonCurrent()) {
+    daemonBusy = true;
+    try {
+      const res = await installDaemon();
+      if (!res.ok) {
+        logActivity(activity.makeEntry('toggle', 'on_failed', null, 'background service setup declined'));
+        pushState();
+        return { ok: false, cancelled: !!res.cancelled, error: 'setup', mode: blockState.mode };
+      }
+    } finally {
+      daemonBusy = false;
+    }
+  }
+  blockState.mode = 'on';
+  persist();
+  logActivity(activity.makeEntry('toggle', 'on'));
+  pushState();
+  return { ok: true, mode: 'on' };
+}
+
+// Auto-protect engaged protection because an agent session was detected. Logs
+// the trigger, remembers what engaged it (for the UI banner), and notifies.
+async function engageAutoProtect(sessions) {
+  const tools = autoprotect.uniqueToolNames(sessions);
+  const res = await engageProtection();
+  if (!res.ok) {
+    logActivity(activity.makeEntry('toggle', 'auto_engage_failed', null, 'auto-protect could not engage (' + tools.join(', ') + ')'));
+    return;
+  }
+  autoProtectEngagedBy = tools;
+  logActivity(activity.makeEntry('toggle', 'auto_engaged', null, tools.join(', ')));
+  if (Notification.isSupported()) {
+    try {
+      new Notification({ title: 'auren', body: 'AI agent activity detected (' + tools.join(', ') + ') \u2014 protection turned ON automatically.' }).show();
+    } catch { /* ignore */ }
+  }
+  pushState();
+}
+
+// Poll: is a live AI-agent session running while protection is off?
+//   - no change since the last scan -> nothing (avoids log/notification spam);
+//   - a session appeared while OFF -> engage (or prompt, per settings);
+//   - a session disappeared -> NOTHING: auto-protect never turns protection off.
+async function checkAutoProtect() {
+  if (autoProtectBusy) return;
+  autoProtectBusy = true;
+  try {
+    const ap = autoprotect.normalizeAutoProtect(readSettings().autoProtect);
+    if (!ap.enabled) {
+      autoProtectLastJson = '';
+      lastAutoProtectSessions = [];
+      return;
+    }
+    const list = procs.list();
+    if (!list) return;
+    const tools = agentdetect.normalizeTools(readSettings().autoProtect && readSettings().autoProtect.tools);
+    const sessions = agentdetect.detectSessions(list, tools);
+    const json = JSON.stringify(sessions);
+    lastAutoProtectSessions = sessions;
+    if (json === autoProtectLastJson) return;
+    autoProtectLastJson = json;
+    if (sessions.length === 0) return;
+    if (blockState.mode === 'on' || blockState.failClosed) return;
+
+    if (ap.mode === 'prompt') {
+      const now = Date.now();
+      if (now - autoProtectPromptAt < 30000) return;
+      autoProtectPromptAt = now;
+      logActivity(activity.makeEntry('daemon', 'auto_protect_prompt', null, 'detected agent session: ' + autoprotect.uniqueToolNames(sessions).join(', ')));
+      pushState();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('autoprotect:prompt', autoprotect.uniqueToolNames(sessions));
+      }
+      return;
+    }
+
+    await engageAutoProtect(sessions);
+  } finally {
+    autoProtectBusy = false;
+  }
+}
+
+function startAutoProtect() {
+  checkAutoProtect();
+  setInterval(checkAutoProtect, AUTOPROTECT_POLL_MS);
 }
 
 /* ------------------------------- window ------------------------------ */
@@ -774,25 +925,7 @@ ipcMain.handle('mode:set', async (_e, mode) => {
   if (next === 'on') {
     // Turning protection ON is instant and un-gated. It also cancels any
     // pending unlock cooldown, so protection can't flip off a moment later.
-    clearOffCooldown();
-    if (!dnsController.isDaemonInstalled() || !dnsController.isDaemonCurrent()) {
-      daemonBusy = true;
-      try {
-        const res = await installDaemon();
-        if (!res.ok) {
-          logActivity(activity.makeEntry('toggle', 'on_failed', null, 'background service setup declined'));
-          pushState();
-          return { ok: false, cancelled: !!res.cancelled, error: 'setup', mode: blockState.mode };
-        }
-      } finally {
-        daemonBusy = false;
-      }
-    }
-    blockState.mode = 'on';
-    persist();
-    logActivity(activity.makeEntry('toggle', 'on'));
-    pushState();
-    return { ok: true, mode: 'on' };
+    return engageProtection();
   }
 
   // Turning protection OFF is gated by an OS-native biometric / passcode
@@ -817,12 +950,34 @@ ipcMain.handle('mode:set', async (_e, mode) => {
     offCooldownUntil = 0;
     blockState.mode = 'off';
     blockState.lock = { state: 'locked', unlockExpiry: 0 };
+    // A manual turn-off is user intent: forget any auto-protect trigger so a
+    // still-running agent session doesn't immediately re-engage protection.
+    autoProtectLastJson = '';
+    autoProtectEngagedBy = [];
     persist();
     logActivity(activity.makeEntry('toggle', 'off'));
     pushState();
   }, OFF_COOLDOWN_MS);
   pushState();
   return { ok: true, mode: blockState.mode, cooldownUntil: offCooldownUntil };
+});
+
+// Auto-protect surfaces: confirm a "prompt" engagement from the UI, and
+// enable/disable the feature (both write through settings.json).
+ipcMain.handle('autoprotect:confirm', async () => {
+  await engageAutoProtect(lastAutoProtectSessions);
+  return { ok: true };
+});
+
+ipcMain.handle('settings:set-auto-protect', (_e, patch) => {
+  const ap = autoprotect.normalizeAutoProtect(readSettings().autoProtect);
+  const next = {
+    enabled: patch && patch.enabled != null ? !!patch.enabled : ap.enabled,
+    mode: patch && patch.mode ? patch.mode : ap.mode
+  };
+  writeSettings({ autoProtect: next });
+  pushState();
+  return { ok: true, autoProtect: next };
 });
 
 /* ------------------------------- startup ----------------------------- */
@@ -847,6 +1002,7 @@ if (!gotLock) {
     createWindow();
     startPolling();
     startWatchdog();
+    startAutoProtect();
     startAgentBridge();
     refreshDaemonIfStale();
     app.on('activate', () => {

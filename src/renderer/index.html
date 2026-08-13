@@ -72,7 +72,29 @@
       </svg>
       <div>
         <strong>Protection is degraded.</strong>
-        Auren&rsquo;s background service isn&rsquo;t responding, so it can&rsquo;t verify that blocked sites are unreachable. Auren is failing closed &mdash; nothing it gates will be allowed through until the service recovers.
+        <span id="degraded-text">Auren&rsquo;s background service isn&rsquo;t responding, so it can&rsquo;t verify that blocked sites are unreachable. Auren is failing closed &mdash; nothing it gates will be allowed through until the service recovers.</span>
+      </div>
+    </div>
+
+    <div id="autoprotect-banner" class="autoprotect-banner hidden" role="status">
+      <svg class="d-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M12 7.5V12l3.2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <strong>Protection was turned on automatically.</strong>
+        AI agent activity was detected while protection was off, so auren engaged it for you. Turning it off still requires your fingerprint or passcode.
+      </div>
+    </div>
+
+    <div id="autoprotect-prompt" class="autoprotect-prompt hidden" role="alertdialog">
+      <div class="ap-text">
+        <strong>AI agent activity detected.</strong>
+        <span id="autoprotect-prompt-tools"></span>
+      </div>
+      <div class="ap-actions">
+        <button class="primary" id="autoprotect-engage" type="button">Protect now</button>
+        <button class="ghost" id="autoprotect-dismiss" type="button">Not now</button>
       </div>
     </div>
 
@@ -122,6 +144,16 @@
         <span class="cooldown-label">Sites unlock in</span>
         <span id="cooldown-count" class="cooldown-count">10</span>
         <span class="cooldown-label">seconds &mdash; verified</span>
+      </div>
+      <div class="settings-row">
+        <label class="switch small" aria-label="Auto-protect">
+          <input type="checkbox" id="autoprotect-toggle" />
+          <span class="slider"></span>
+        </label>
+        <div class="settings-label">
+          <span class="settings-name">Auto-protect</span>
+          <span class="settings-sub">Turn protection on automatically when AI agent activity is detected.</span>
+        </div>
       </div>
       <p class="error hidden" id="mode-error"></p>
     </section>

@@ -78,4 +78,27 @@ function isEnforcing() {
   return saw > 0 && allLoopback;
 }
 
-module.exports = { listServices, getServers, setServers, discoverUpstream, isEnforcing };
+// Parse `lsof -F pcn` output into the first process record. Pure and unit-
+// testable. Each record looks like: p<PID>\nc<COMMAND>\nn<NAME>\n
+function parseLsofPcn(text) {
+  let pid = null;
+  let name = null;
+  for (const line of String(text || '').split('\n')) {
+    const t = line.trim();
+    if (t.startsWith('p')) pid = t.slice(1);
+    else if (t.startsWith('c') && pid) name = t.slice(1);
+    else if (t.startsWith('n') && pid) break; // first socket record closes the group
+  }
+  if (!pid) return null;
+  return { pid: parseInt(pid, 10) || null, name: name || null };
+}
+
+// Identify the process listening on a TCP port, used to name a port-53
+// conflict when our resolver can't bind. Returns { pid, name } or null.
+function portOwner(port) {
+  const r = spawnSync('/usr/sbin/lsof', ['-nP', '-iTCP:' + port, '-sTCP:LISTEN', '-F', 'pcn'], { encoding: 'utf8' });
+  if (r.status !== 0 || !r.stdout) return null;
+  return parseLsofPcn(r.stdout);
+}
+
+module.exports = { listServices, getServers, setServers, discoverUpstream, isEnforcing, portOwner, parseLsofPcn };

@@ -19,5 +19,8 @@ contextBridge.exposeInMainWorld('auren', {
   inspectAction: (payload) => ipcRenderer.invoke('agent:inspect-action', payload),
   inspectCommand: (payload) => ipcRenderer.invoke('agent:inspect-command', payload),
   finishOnboarding: () => ipcRenderer.invoke('onboarding:done'),
-  onChange: (cb) => ipcRenderer.on('state', (_event, state) => cb(state))
+  setAutoProtect: (patch) => ipcRenderer.invoke('settings:set-auto-protect', patch),
+  confirmAutoProtect: () => ipcRenderer.invoke('autoprotect:confirm'),
+  onChange: (cb) => ipcRenderer.on('state', (_event, state) => cb(state)),
+  onAutoProtectPrompt: (cb) => ipcRenderer.on('autoprotect:prompt', (_event, tools) => cb(tools))
 });

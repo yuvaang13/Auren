@@ -27,7 +27,7 @@ const TASK_NAME = 'AurenGuardrailDaemon';
 const DAEMON_LIB = paths.daemonDir();
 const SPOOL = paths.systemSpoolDir();
 const RUNNER = path.join(DAEMON_LIB, 'run-daemon.ps1');
-const DAEMON_VERSION = 15;
+const DAEMON_VERSION = 17;
 
 function psBin() {
   return process.env.AUREN_PS || 'powershell.exe';
@@ -170,10 +170,14 @@ function stageDaemonFiles() {
   for (const f of ['daemon.js', 'resolver.js', 'dns-message.js', 'cache.js', 'pf.js', 'pf-win.js']) {
     fs.copyFileSync(path.join(dnsDir, f), path.join(dir, f));
   }
+  const proxyDir = path.join(__dirname, '..', 'proxy');
+  for (const f of ['sni.js', 'server.js']) {
+    fs.copyFileSync(path.join(proxyDir, f), path.join(dir, f));
+  }
   for (const f of ['domains.js', 'config.js', 'activity.js', 'apps.js']) {
     fs.copyFileSync(path.join(coreDir, f), path.join(dir, f));
   }
-  for (const f of ['autofill.js', 'autofill-win.js', 'dnsops.js', 'dnsops-win.js', 'procs.js', 'procs-win.js']) {
+  for (const f of ['autofill.js', 'autofill-win.js', 'dnsops.js', 'dnsops-win.js', 'proxyops.js', 'proxyops-win.js', 'procs.js', 'procs-win.js']) {
     fs.copyFileSync(path.join(platformDir, f), path.join(dir, f));
   }
   return dir;

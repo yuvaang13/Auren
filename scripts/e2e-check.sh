@@ -10,6 +10,12 @@
 #   2. a blocked domain returns NXDOMAIN via the local resolver
 #   3. a normal domain still resolves via the upstream forwarder
 #
+# Plus the HTTPS/SNI blocking layer (daemon v16+):
+#   4. the loopback proxy serves the PAC at http://127.0.0.1:42792/proxy.pac
+#   5. the system proxy is pointed at that PAC (so browsers route HTTPS through
+#      the proxy)
+#   6. a blocked domain's HTTPS CONNECT is refused with 403 by the proxy
+#
 # It temporarily adds a harmless test domain (auren-e2e-check.test) to the
 # block list, verifies, then removes it again.
 set -u
@@ -58,6 +64,42 @@ if [ -f "$CONFIG" ] && [ -f "$KEY" ]; then
     pass "non-blocked domain resolves via upstream (example.com -> $ALLOWED_A)"
   else
     fail "non-blocked domain did not resolve (status: ${ALLOWED_STATUS:-none})"
+  fi
+
+  # 4. The loopback proxy serves the PAC (daemon v16+).
+  PAC="http://127.0.0.1:42792/proxy.pac"
+  PAC_BODY="$(curl -s -m 3 "$PAC" 2>/dev/null)"
+  if printf '%s' "$PAC_BODY" | grep -q "FindProxyForURL" && printf '%s' "$PAC_BODY" | grep -q "PROXY 127.0.0.1:42792"; then
+    pass "HTTPS proxy serves the PAC at $PAC"
+  else
+    fail "HTTPS proxy PAC not served at $PAC — is the v16 daemon running with Protection ON?"
+  fi
+
+  # 5. The system proxy is pointed at the PAC on at least one service.
+  PAC_FOUND=0
+  for svc in $(networksetup -listallnetworkservices 2>/dev/null | tail -n +2); do
+    URL="$(networksetup -getautoproxyurl "$svc" 2>/dev/null | awk '/URL:/{print $2}')"
+    if [ "$URL" = "$PAC" ]; then PAC_FOUND=1; break; fi
+  done
+  if [ "$PAC_FOUND" -eq 1 ]; then
+    pass "system proxy points at the Auren PAC ($PAC)"
+  else
+    fail "no network service points its proxy at $PAC — Protection may be off"
+  fi
+
+  # 6. HTTPS CONNECT to the blocked domain is refused by the proxy, while a
+  #    normal domain still tunnels through it (positive control).
+  CONNECT_OUT="$(curl -sS -m 5 -x "http://127.0.0.1:42792" "https://$TEST_DOMAIN/" 2>&1)"
+  if printf '%s' "$CONNECT_OUT" | grep -q "403"; then
+    pass "HTTPS CONNECT to $TEST_DOMAIN refused with 403 by the proxy"
+  else
+    fail "HTTPS CONNECT to $TEST_DOMAIN was not refused: $(printf '%s' "$CONNECT_OUT" | tail -1)"
+  fi
+  ALLOWED_CODE="$(curl -s -m 10 -x "http://127.0.0.1:42792" -o /dev/null -w '%{http_code}' "https://example.com/" 2>/dev/null)"
+  if [ "$ALLOWED_CODE" = "200" ] || [ "$ALLOWED_CODE" = "301" ] || [ "$ALLOWED_CODE" = "302" ]; then
+    pass "HTTPS through the proxy still works (example.com -> HTTP $ALLOWED_CODE)"
+  else
+    fail "HTTPS through the proxy failed for a non-blocked domain (HTTP $ALLOWED_CODE)"
   fi
 
   # Clean up the test domain.
