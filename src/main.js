@@ -93,7 +93,7 @@ let shieldSecureInput = false;
 // After a successful unlock (Touch ID / passcode), the block list stays active
 // for this long before protection actually turns off. Gives a human a moment to
 // confirm the unlock; an agent can't get at the sites instantly.
-const OFF_COOLDOWN_MS = 10 * 1000;
+const OFF_COOLDOWN_MS = 5 * 1000;
 let offCooldownTimer = null;
 let offCooldownUntil = 0;
 // Set once a graceful quit has cleared the protection gate, so the follow-up
@@ -996,13 +996,13 @@ ipcMain.handle('mode:set', async (_e, mode) => {
   }
 
   // Verification passed. Protection does NOT flip off instantly: the block
-  // list stays live through a 10s cooldown, then protection turns off. Turning
+  // list stays live through a 5s cooldown, then protection turns off. Turning
   // it back ON in that window cancels the pending unlock.
   clearOffCooldown();
   offCooldownUntil = Date.now() + OFF_COOLDOWN_MS;
   blockState.lock = { state: 'unlocking', unlockExpiry: offCooldownUntil };
   persist();
-  logActivity(activity.makeEntry('toggle', 'off_pending', null, 'verified — 10s cooldown before sites unlock'));
+  logActivity(activity.makeEntry('toggle', 'off_pending', null, 'verified — 5s cooldown before sites unlock'));
   offCooldownTimer = setTimeout(() => {
     offCooldownTimer = null;
     offCooldownUntil = 0;

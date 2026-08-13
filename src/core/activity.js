@@ -61,7 +61,7 @@ function toPlainText(entry) {
     case 'toggle':
       if (entry.outcome === 'on') return `Protection turned on \u00b7 ${time}`;
       if (entry.outcome === 'off') return `Protection turned off (verified by fingerprint or passcode) \u00b7 ${time}`;
-      if (entry.outcome === 'off_pending') return `Protection-off verified \u2014 sites stay blocked for 10 seconds \u00b7 ${time}`;
+      if (entry.outcome === 'off_pending') return `Protection-off verified \u2014 sites stay blocked for 5 seconds \u00b7 ${time}`;
       if (entry.outcome === 'off_failed') return `Protection-off request did not pass verification \u00b7 ${time}`;
       if (entry.outcome === 'off_cancelled') return `Protection-off request cancelled \u00b7 ${time}`;
       if (entry.outcome === 'on_failed') return `Protection-on request did not finish (background service setup declined) \u00b7 ${time}`;

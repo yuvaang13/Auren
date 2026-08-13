@@ -296,7 +296,7 @@ test('activity toPlainText stays plain-language', () => {
   const e = activity.makeEntry('block', 'blocked', 'bank.com');
   assert.ok(activity.toPlainText(e).includes('Blocked: attempt to reach bank.com'));
   assert.ok(activity.toPlainText(activity.makeEntry('toggle', 'off')).includes('Protection turned off'));
-  assert.ok(activity.toPlainText(activity.makeEntry('toggle', 'off_pending')).includes('10 seconds'));
+  assert.ok(activity.toPlainText(activity.makeEntry('toggle', 'off_pending')).includes('5 seconds'));
 });
 
 test('activity toPlainText covers agent + daemon integrity outcomes', () => {

@@ -344,7 +344,7 @@ Auren's default on any verification failure is **block, not allow**:
   daemon, which re-verifies the config signature before resuming.
 - Turning the toggle OFF (authenticated) is the in-app path that restores
   normal DNS while the app stays running; it's gated by the OS-native check
-  plus the 10-second cooldown.
+  plus the 5-second cooldown.
 
 ### 4. Honest limits (known gaps)
 
@@ -665,7 +665,7 @@ Turning protection **off** requires an OS-native biometric or device-passcode
 check (macOS Touch ID with the standard macOS password prompt as the fallback;
 Windows Hello via the UserConsentVerifier API with a UAC elevation prompt as
 the fallback on machines without Hello). After a successful check, the block
-list stays active for a **10-second cooldown** before protection actually turns
+list stays active for a **5-second cooldown** before protection actually turns
 off, so a human has a moment to confirm the unlock. The reason is simple: an AI
 agent that can click buttons must not be able to click protection off on its
 own.
@@ -747,7 +747,7 @@ to add sites), then lands you on the block-list screen.
 When you turn **Protection Mode ON** for the first time, macOS will ask for
 your password once — that installs the background DNS service. Every ON/OFF
 after that is instant; only turning OFF asks for your fingerprint or passcode
-and then waits out a 10-second cooldown before sites become reachable.
+and then waits out a 5-second cooldown before sites become reachable.
 
 > **Note for machines with TLS/certificate restrictions:** the Electron binary
 > is downloaded over HTTPS from GitHub. If `npm install` fails to fetch it
