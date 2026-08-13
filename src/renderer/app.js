@@ -116,6 +116,16 @@ function render() {
   $('autoprotect-toggle').checked = !!autoProtect.enabled;
   const apEngaged = on && Array.isArray(autoProtect.engagedBy) && autoProtect.engagedBy.length > 0;
   $('autoprotect-banner').classList.toggle('hidden', !apEngaged);
+  // The ignore action is offered once per engage; once used it is noted and
+  // the button hides (it only affects FUTURE auto-engages, not current state).
+  // When the banner hides the note resets for the next engage.
+  if (!apEngaged) {
+    $('autoprotect-ignore-row').classList.add('hidden');
+    $('autoprotect-ignore-note').textContent = '';
+    $('autoprotect-ignore').classList.remove('hidden');
+  } else if (!$('autoprotect-ignore-note').textContent) {
+    $('autoprotect-ignore-row').classList.remove('hidden');
+  }
 
   const shieldOn = !!state.keystrokeShield;
   $('keystroke-shield-badge').classList.toggle('hidden', !shieldOn);
@@ -300,6 +310,15 @@ async function init() {
 
   $('autoprotect-dismiss').addEventListener('click', () => {
     $('autoprotect-prompt').classList.add('hidden');
+  });
+
+  $('autoprotect-ignore').addEventListener('click', async () => {
+    const engaged = state.autoProtect && Array.isArray(state.autoProtect.engagedBy) ? state.autoProtect.engagedBy : [];
+    if (!engaged.length) return;
+    const tool = engaged[0];
+    await api.ignoreAgentTool(tool);
+    $('autoprotect-ignore').classList.add('hidden');
+    $('autoprotect-ignore-note').textContent = tool + ' is ignored \u2014 it won\u2019t auto-engage protection again.';
   });
 
   api.onAutoProtectPrompt((tools) => {

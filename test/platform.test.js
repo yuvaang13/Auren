@@ -167,24 +167,38 @@ test('dnsops-win: discoverUpstream prefers backed-up state servers', () => {
 
 test('procs-win: parseLine survives pipes, quotes and empty command lines', () => {
   const US = procsWin.US;
-  const p = procsWin.parseLine('1234' + US + 'C:\\Program Files\\Discord\\Discord.exe' + US + '"C:\\Program Files\\Discord\\Discord.exe" --type=renderer');
+  const p = procsWin.parseLine('1234' + US + '5678' + US + 'C:\\Program Files\\Discord\\Discord.exe' + US + '"C:\\Program Files\\Discord\\Discord.exe" --type=renderer');
   assert.strictEqual(p.pid, 1234);
+  assert.strictEqual(p.ppid, 5678);
   assert.strictEqual(p.exe, 'C:\\Program Files\\Discord\\Discord.exe');
   assert.deepStrictEqual(p.tokens, ['C:\\Program Files\\Discord\\Discord.exe', '--type=renderer']);
+  // Legacy 3-field records (no ppid) still parse for older callers.
+  const legacy = procsWin.parseLine('9' + US + 'C:\\Windows\\System32\\svchost.exe' + US + '');
+  assert.strictEqual(legacy.pid, 9);
+  assert.strictEqual(legacy.ppid, undefined);
   // null CommandLine -> no tokens, but the exe path still matches
   const sys = procsWin.parseLine('4' + US + 'C:\\Windows\\System32\\csrss.exe' + US + '');
   assert.strictEqual(sys.pid, 4);
   assert.strictEqual(sys.tokens.length, 0);
   assert.strictEqual(procsWin.parseLine('garbage'), null);
-  assert.strictEqual(procsWin.parseLine('0' + US + '' + US + ''), null);
+  assert.strictEqual(procsWin.parseLine('0' + US + '0' + US + '' + US + ''), null);
 });
 
-test('procs-win: listCmd emits the CIM query with unit-separator records', () => {
+test('procs-win: listCmd emits the CIM query with ppid and unit-separator records', () => {
   const cmd = procsWin.listCmd();
   assert.ok(/Get-CimInstance Win32_Process/.test(cmd));
   assert.ok(cmd.includes(procsWin.US));
   assert.ok(/ExecutablePath/.test(cmd));
   assert.ok(/CommandLine/.test(cmd));
+  assert.ok(/ParentProcessId/.test(cmd), 'ppid is part of the record');
+});
+
+test('apps: parsePsLine captures ppid (ps -axo pid=,ppid=,command=) and stays legacy-compatible', () => {
+  const rec = apps.parsePsLine('100 99 /usr/bin/node /x.js');
+  assert.deepStrictEqual(rec, { pid: 100, ppid: 99, exe: '/usr/bin/node', tokens: ['/usr/bin/node', '/x.js'] });
+  const legacy = apps.parsePsLine('101 /usr/bin/node /x.js');
+  assert.strictEqual(legacy.pid, 101);
+  assert.strictEqual(legacy.ppid, undefined);
 });
 
 test('apps: findBlockedProcesses matches descriptors like findBlockedPids does', () => {

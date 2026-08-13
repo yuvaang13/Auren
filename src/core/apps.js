@@ -76,13 +76,29 @@ function normalizeAppBlocklist(list) {
 // when the line isn't a process (or is a system placeholder we never touch).
 function parsePsLine(line) {
   const s = String(line || '');
-  const m = /^\s*(\d+)\s+(.+)$/.exec(s);
-  if (!m) return null;
-  const pid = Number(m[1]);
+  // Preferred form: "pid ppid command..." (ps -axo pid=,ppid=,command=).
+  // Tolerant of the older "pid command..." form, so raw ps text from any
+  // caller still parses. ppid is optional — ancestry just won't resolve.
+  let pid;
+  let ppid = null;
+  let rest;
+  const both = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(s);
+  if (both) {
+    pid = Number(both[1]);
+    ppid = Number(both[2]);
+    rest = both[3];
+  } else {
+    const legacy = /^\s*(\d+)\s+(.+)$/.exec(s);
+    if (!legacy) return null;
+    pid = Number(legacy[1]);
+    rest = legacy[2];
+  }
   if (!Number.isFinite(pid) || pid <= 0) return null;
-  const tokens = m[2].trim().split(/\s+/).filter(Boolean);
+  const tokens = rest.trim().split(/\s+/).filter(Boolean);
   if (!tokens.length) return null;
-  return { pid, exe: tokens[0], tokens };
+  const rec = { pid, exe: tokens[0], tokens };
+  if (Number.isFinite(ppid) && ppid > 0) rec.ppid = ppid;
+  return rec;
 }
 
 // Does a running process match a blocked entry? Exact executable path,

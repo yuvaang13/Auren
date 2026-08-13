@@ -1,8 +1,10 @@
 /* Auren — procs-mac.js
  *
- * macOS process listing for the daemon's app blocker: `ps -axo pid=,command=`
- * parsed with the shared core/apps.js parser, and `/bin/kill -9` for the kill.
- * Extracted from daemon.js so the daemon stays platform-neutral.
+ * macOS process listing for the daemon's app blocker and auto-protect:
+ * `ps -axo pid=,ppid=,command=` parsed with the shared core/apps.js parser,
+ * and `/bin/kill -9` for the kill. Extracted from daemon.js so the daemon
+ * stays platform-neutral. ppid feeds agent ancestry detection; the app blocker
+ * simply ignores it.
  */
 
 'use strict';
@@ -18,9 +20,9 @@ try { apps = require(path.join(__dirname, 'apps.js')); } catch (err) {
 }
 const { parsePsLine } = apps;
 
-// [{ pid, exe, tokens }, ...] or null when ps itself fails.
+// [{ pid, ppid, exe, tokens }, ...] or null when ps itself fails.
 function list() {
-  const r = spawnSync('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+  const r = spawnSync('/bin/ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
   if (r.status !== 0) return null;
   return String(r.stdout || '')
     .split('\n')

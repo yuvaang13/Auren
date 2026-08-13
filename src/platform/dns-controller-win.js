@@ -27,7 +27,7 @@ const TASK_NAME = 'AurenGuardrailDaemon';
 const DAEMON_LIB = paths.daemonDir();
 const SPOOL = paths.systemSpoolDir();
 const RUNNER = path.join(DAEMON_LIB, 'run-daemon.ps1');
-const DAEMON_VERSION = 17;
+const DAEMON_VERSION = 18;
 
 function psBin() {
   return process.env.AUREN_PS || 'powershell.exe';

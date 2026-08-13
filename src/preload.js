@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('auren', {
   finishOnboarding: () => ipcRenderer.invoke('onboarding:done'),
   setAutoProtect: (patch) => ipcRenderer.invoke('settings:set-auto-protect', patch),
   confirmAutoProtect: () => ipcRenderer.invoke('autoprotect:confirm'),
+  ignoreAgentTool: (tool) => ipcRenderer.invoke('settings:ignore-agent-tool', tool),
   onChange: (cb) => ipcRenderer.on('state', (_event, state) => cb(state)),
   onAutoProtectPrompt: (cb) => ipcRenderer.on('autoprotect:prompt', (_event, tools) => cb(tools))
 });

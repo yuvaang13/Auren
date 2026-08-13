@@ -55,13 +55,18 @@ OS command gate blocks the pipeline before it runs.
 - **One policy, one switch.** Sites, apps, commands, autofill, and sensitive
   data all sit behind the same biometric-gated Protection Mode — nothing
   per-tool to configure or drift.
-- **Auto-protect (beta).** Auren watches for known AI-agent activity — headless
-  or remote-debugging browsers, Playwright/Puppeteer/Selenium drivers, CLI
-  agents (Claude Code, Codex, Goose, OpenCode, and more), Cursor/Windsurf — and
-  turns Protection Mode ON itself when it spots a session running while you're
-  unprotected. It only ever *raises* protection; turning it back off still
-  requires your fingerprint or passcode. Extend the signature list via
-  `autoProtect.tools` in settings.json.
+- **Auto-protect (beta).** Auren watches for AI-agent activity — headless or
+  remote-debugging browsers, Playwright/Puppeteer/Selenium drivers, CLI agents
+  (Claude Code, Codex, Goose, OpenCode, and more), Cursor/Windsurf, and
+  processes those agents spawn — and turns Protection Mode ON itself when it
+  spots a session running while you're unprotected. Detection requires a match
+  to persist and clear a confidence bar (see [How auto-protect decides](#how-auto-protect-decides)),
+  so a real agent engages within a couple of seconds while a stray word in an
+  unrelated command line never flips the firewall on. It only ever *raises*
+  protection; turning it back off still requires your fingerprint or passcode.
+  Extend the signature list via `autoProtect.tools`, silence false positives
+  per-tool via `autoProtect.ignore`, or with the **"Ignore this tool"** button
+  on the auto-protect banner — all in settings.json.
 - **Complements, not competes with, model guardrails.** Run both: a
   prompt/response guardrail sets intent; Auren enforces the outcome on the
   machine.
@@ -128,6 +133,67 @@ AI agent ──▶ any browser or app ──▶ Auren's local DNS resolver (127.
                                         ├─ blocked domain  → NXDOMAIN (unreachable)
                                         └─ everything else → forwarded to a real DNS server
 ```
+
+## How auto-protect decides
+
+Auto-protect engages Protection Mode when a live agent session is confirmed —
+not on the first glance. The pipeline (all in the app's main process,
+`src/core/agentdetect.js` → `agenttrack.js` → `autoprotect.js`):
+
+1. **Every second** Auren snapshots running processes (`ps` on macOS,
+   PowerShell CIM on Windows) and matches each one against a signature list.
+   Every match is *evidence with a score*:
+   - a match on the **executable basename** (the real `claude`, `codex`,
+     `cursor`, `chromedriver` … binary) scores **3** — unambiguous;
+   - a match on an **argv token** scores by how specific it is:
+     automation flags/driver processes (`--headless`, `--remote-debugging-port=`,
+     Playwright/Puppeteer/Selenium) score **3**, wrapper invocations
+     (`claude-code`, `@anthropic-ai/claude-code`) score **2**, and a bare tool
+     word (`rg codex`, `vim goose`) scores just **1**;
+   - processes **spawned by** a strong match (via ppid ancestry) count too, so
+     a headed Playwright browser or an agent-spawned shell with no agent-looking
+     flags still counts as agent activity.
+2. **Evidence must persist.** The tracker only *confirms* a match once it has
+   been seen continuously for `minDwellMs` (default 2000ms) — except strong
+   signals, which confirm after two consecutive scans (~400ms apart).
+3. **Confidence must clear a bar.** Auren engages only when confirmed scores
+   sum to at least `minConfidence` (default 3). One real agent binary engages;
+   a transient `rg codex` (score 1, gone in a second) never does.
+4. **Snooze respects a manual turn-off.** If you turn Protection off (with your
+   fingerprint) right after an auto-engage, the tools that triggered it are
+   snoozed (`snoozeMs`, default 30 minutes) so Protection doesn't immediately
+   fight you back on. A *different* tool still engages immediately.
+
+It only ever *raises* protection. A detected session that disappears, or a
+confirmed session you then manually turn off, never re-enables anything by
+itself — turning Protection off is always the biometric-gated user path, and
+anything you explicitly ignore is left alone.
+
+Settings (all in `settings.json`, HMAC-signed):
+
+```jsonc
+{
+  "autoProtect": {
+    "enabled": true,
+    "mode": "on",                       // or "prompt" to ask first
+    "minDwellMs": 2000,                 // how long a match must persist
+    "minConfidence": 3,                 // confirmed-score bar to engage
+    "snoozeMs": 1800000,                // respect manual off for this long
+    "tools": [                          // extend the signature list
+      { "name": "my-agent", "re": "\\bmyagent\\b" }
+    ],
+    "ignore": [                         // silence false positives per tool
+      { "tool": "codex-cli", "exe": "/usr/local/bin/codex" }   // exe optional
+    ]
+  }
+}
+```
+
+Known limits: a sub-2-second one-shot (`claude -p "..."` that finishes in under
+a second) can slip between scans — the dwell/confidence trade-off favors not
+false-tripping. Agents inside VMs, containers, or WSL have their own process
+lists and aren't visible here. Detection runs in the app's main process, not
+the root daemon.
 
 ## What this does NOT do yet
 

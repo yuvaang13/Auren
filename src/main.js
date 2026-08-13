@@ -39,6 +39,7 @@ const store = require('./core/store');
 const agentgate = require('./core/agentgate');
 const agentdetect = require('./core/agentdetect');
 const autoprotect = require('./core/autoprotect');
+const agenttrack = require('./core/agenttrack');
 const pf = require('./dns/pf');
 const virt = require('./core/virt');
 const httpBridge = require('./bridge/http');
@@ -125,16 +126,31 @@ const WATCHDOG_GRACE_MS = 12000;
 const STARTED_AT = Date.now();
 let daemonBusy = false;
 
-// Auto-protect (see src/core/agentdetect.js + autoprotect.js). While protection
-// is OFF, a live AI-agent session engages it automatically. One-directional:
-// it can only raise protection; turning it off is always the biometric-gated
-// user path, and a detected session that disappears never turns protection off.
-const AUTOPROTECT_POLL_MS = 2000;
+// Auto-protect (see src/core/agentdetect.js + autoprotect.js + agenttrack.js).
+// While protection is OFF, a live AI-agent session engages it automatically.
+// One-directional: it can only raise protection; turning it off is always the
+// biometric-gated user path, and a detected session that disappears never
+// turns protection off. Detection requires a match to persist (dwell) and to
+// clear a confidence bar, so a stray word in an unrelated command line can't
+// flip the firewall on.
+const AUTOPROTECT_POLL_MS = 1000;
+const AUTO_PROTECT_FAST_RECHECK_MS = 400;
 let autoProtectLastJson = '';
 let autoProtectEngagedBy = [];
 let lastAutoProtectSessions = [];
 let autoProtectPromptAt = 0;
 let autoProtectBusy = false;
+// Dwell/confidence tracker (src/core/agenttrack.js) — confirms matches that
+// persist, and fast-confirms strong signals on a follow-up scan.
+const autoTracker = agenttrack.createTracker();
+// Snooze: tools the user manually turned protection off on stay off (per
+// autoProtect.snoozeMs) so protection doesn't instantly fight the user back
+// on. A DIFFERENT tool still auto-engages.
+let autoProtectSnoozedUntil = {};
+// Pids already seen, for the new-pid fast re-scan.
+let autoProtectSeenPids = new Set();
+let autoProtectFastTimer = null;
+let autoProtectFastMode = false;
 
 function clearOffCooldown() {
   if (offCooldownTimer) { clearTimeout(offCooldownTimer); offCooldownTimer = null; }
@@ -765,43 +781,83 @@ async function engageAutoProtect(sessions) {
 }
 
 // Poll: is a live AI-agent session running while protection is off?
+//   - detection is evidence-scored (agentdetect.js) and dwell-confirmed
+//     (agenttrack.js), so a real agent binary engages after ~1-2s while a
+//     transient word match never does;
 //   - no change since the last scan -> nothing (avoids log/notification spam);
-//   - a session appeared while OFF -> engage (or prompt, per settings);
+//   - a confirmed session appeared while OFF -> engage (or prompt, per
+//     settings), unless the tool is snoozed after a manual turn-off;
 //   - a session disappeared -> NOTHING: auto-protect never turns protection off.
 async function checkAutoProtect() {
   if (autoProtectBusy) return;
   autoProtectBusy = true;
+  const fastMode = autoProtectFastMode;
+  autoProtectFastMode = false;
   try {
     const ap = autoprotect.normalizeAutoProtect(readSettings().autoProtect);
     if (!ap.enabled) {
       autoProtectLastJson = '';
       lastAutoProtectSessions = [];
+      autoTracker.reset();
       return;
     }
     const list = procs.list();
     if (!list) return;
-    const tools = agentdetect.normalizeTools(readSettings().autoProtect && readSettings().autoProtect.tools);
-    const sessions = agentdetect.detectSessions(list, tools);
-    const json = JSON.stringify(sessions);
-    lastAutoProtectSessions = sessions;
+    const tools = agentdetect.normalizeTools(ap.tools);
+    const base = agentdetect.detectSessions(list, tools, { ignore: ap.ignore });
+    const evidence = agentdetect.ancestorEvidence(list, base).concat(base);
+    const confirmed = autoTracker.update(evidence, ap.minDwellMs, fastMode);
+
+    // Newly-seen pids get one fast re-scan ~400ms later so an unambiguous
+    // strong signal (agent binary/driver) confirms without waiting out the
+    // dwell. Only rearm when not already in a fast re-scan.
+    if (!fastMode) {
+      let foundNew = false;
+      for (const p of list) {
+        if (!p || !p.pid) continue;
+        if (!autoProtectSeenPids.has(p.pid)) foundNew = true;
+        autoProtectSeenPids.add(p.pid);
+      }
+      if (autoProtectSeenPids.size > 5000) autoProtectSeenPids = new Set();
+      if (foundNew && !autoProtectFastTimer) {
+        autoProtectFastTimer = setTimeout(() => {
+          autoProtectFastTimer = null;
+          autoProtectFastMode = true;
+          checkAutoProtect();
+        }, AUTO_PROTECT_FAST_RECHECK_MS);
+      }
+    }
+
+    lastAutoProtectSessions = confirmed;
+    const json = JSON.stringify({ confirmed: confirmed.map((s) => ({ tool: s.tool, pid: s.pid })), snoozed: autoProtectSnoozedUntil });
     if (json === autoProtectLastJson) return;
     autoProtectLastJson = json;
-    if (sessions.length === 0) return;
+    if (confirmed.length === 0) return;
     if (blockState.mode === 'on' || blockState.failClosed) return;
+
+    const engage = autoprotect.shouldEngage({
+      mode: blockState.mode,
+      failClosed: blockState.failClosed,
+      autoProtect: readSettings().autoProtect,
+      sessions: confirmed,
+      snoozedUntil: autoProtectSnoozedUntil,
+      now: Date.now()
+    });
+    if (!engage) return;
 
     if (ap.mode === 'prompt') {
       const now = Date.now();
       if (now - autoProtectPromptAt < 30000) return;
       autoProtectPromptAt = now;
-      logActivity(activity.makeEntry('daemon', 'auto_protect_prompt', null, 'detected agent session: ' + autoprotect.uniqueToolNames(sessions).join(', ')));
+      logActivity(activity.makeEntry('daemon', 'auto_protect_prompt', null, 'detected agent session: ' + autoprotect.uniqueToolNames(confirmed).join(', ')));
       pushState();
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('autoprotect:prompt', autoprotect.uniqueToolNames(sessions));
+        mainWindow.webContents.send('autoprotect:prompt', autoprotect.uniqueToolNames(confirmed));
       }
       return;
     }
 
-    await engageAutoProtect(sessions);
+    await engageAutoProtect(confirmed);
   } finally {
     autoProtectBusy = false;
   }
@@ -924,7 +980,9 @@ ipcMain.handle('mode:set', async (_e, mode) => {
 
   if (next === 'on') {
     // Turning protection ON is instant and un-gated. It also cancels any
-    // pending unlock cooldown, so protection can't flip off a moment later.
+    // pending unlock cooldown, so protection can't flip off a moment later,
+    // and clears auto-protect's snooze state (a manual ON resets it).
+    autoProtectSnoozedUntil = {};
     return engageProtection();
   }
 
@@ -950,10 +1008,20 @@ ipcMain.handle('mode:set', async (_e, mode) => {
     offCooldownUntil = 0;
     blockState.mode = 'off';
     blockState.lock = { state: 'locked', unlockExpiry: 0 };
-    // A manual turn-off is user intent: forget any auto-protect trigger so a
-    // still-running agent session doesn't immediately re-engage protection.
+    // A manual turn-off is user intent: snooze the tools that engaged
+    // auto-protect so a still-running agent doesn't instantly re-engage it,
+    // and forget the auto-protect trigger state. A different agent tool still
+    // auto-engages immediately (shouldEngage filters per tool).
+    const engagedBy = autoProtectEngagedBy.slice();
+    if (engagedBy.length > 0) {
+      const ap = autoprotect.normalizeAutoProtect(readSettings().autoProtect);
+      const until = Date.now() + ap.snoozeMs;
+      for (const tool of engagedBy) autoProtectSnoozedUntil[tool] = until;
+      logActivity(activity.makeEntry('toggle', 'auto_snoozed', null, 'snoozed ' + engagedBy.join(', ') + ' for ' + ap.snoozeMs + 'ms after manual off'));
+    }
     autoProtectLastJson = '';
     autoProtectEngagedBy = [];
+    autoTracker.reset();
     persist();
     logActivity(activity.makeEntry('toggle', 'off'));
     pushState();
@@ -971,11 +1039,27 @@ ipcMain.handle('autoprotect:confirm', async () => {
 
 ipcMain.handle('settings:set-auto-protect', (_e, patch) => {
   const ap = autoprotect.normalizeAutoProtect(readSettings().autoProtect);
-  const next = {
+  const next = Object.assign({}, ap, {
     enabled: patch && patch.enabled != null ? !!patch.enabled : ap.enabled,
     mode: patch && patch.mode ? patch.mode : ap.mode
-  };
+  });
   writeSettings({ autoProtect: next });
+  pushState();
+  return { ok: true, autoProtect: next };
+});
+
+// "Ignore this tool" from the auto-protect banner: adds { tool } to
+// autoProtect.ignore so that signature no longer counts toward engagement.
+// Only ever reduces auto-engagement — never touches existing protection.
+ipcMain.handle('settings:ignore-agent-tool', (_e, tool) => {
+  const name = String(tool || '').trim();
+  if (!name) return { ok: false, error: 'tool required' };
+  const ap = autoprotect.normalizeAutoProtect(readSettings().autoProtect);
+  const ignore = ap.ignore.filter((i) => i.tool !== name);
+  ignore.push({ tool: name });
+  const next = Object.assign({}, ap, { ignore });
+  writeSettings({ autoProtect: next });
+  logActivity(activity.makeEntry('daemon', 'agent_ignored', null, 'auto-protect will ignore ' + name));
   pushState();
   return { ok: true, autoProtect: next };
 });

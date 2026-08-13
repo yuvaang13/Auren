@@ -158,6 +158,127 @@ test('uniqueToolNames deduplicates across sessions', () => {
   assert.deepStrictEqual(names, ['claude-code', 'headless-browser']);
 });
 
+/* ------------------ scoring, tiers, ancestry, ignore ------------------ */
+
+test('detectSessions scores basename matches 3 and argv words 1', () => {
+  const tools = agentdetect.normalizeTools(undefined);
+  const exe = agentdetect.detectSessions([P(101, '/usr/local/bin/codex', ['--json'])], tools);
+  assert.strictEqual(exe[0].score, 3);
+  assert.strictEqual(exe[0].via, 'exe');
+  const word = agentdetect.detectSessions([P(102, '/usr/bin/grep', ['-r', 'codex', 'src'])], tools);
+  assert.strictEqual(word[0].tool, 'codex-cli');
+  assert.strictEqual(word[0].score, 1);
+  assert.strictEqual(word[0].via, 'argv');
+});
+
+test('detectSessions scores wrapper invocations 2', () => {
+  const tools = agentdetect.normalizeTools(undefined);
+  const sessions = agentdetect.detectSessions(
+    [P(3, '/usr/local/bin/npx', ['@anthropic-ai/claude-code', '--version'])],
+    tools
+  );
+  const w = sessions.find((s) => s.tool === 'claude-code-wrapper');
+  assert.ok(w, 'wrapper token detected');
+  assert.strictEqual(w.score, 2);
+});
+
+test('detectSessions applies the ignore list before scoring', () => {
+  const tools = agentdetect.normalizeTools(undefined);
+  const ignore = [{ tool: 'codex-cli' }];
+  const all = agentdetect.detectSessions([P(4, '/usr/local/bin/codex', [])], tools, { ignore });
+  assert.strictEqual(all.length, 0, 'tool-level ignore silences the match');
+  const exeScoped = agentdetect.detectSessions([P(5, '/usr/local/bin/codex', [])], tools, {
+    ignore: [{ tool: 'codex-cli', exe: '/other/path/codex' }]
+  });
+  assert.strictEqual(exeScoped.length, 1, 'exe-scoped ignore only silences that executable');
+});
+
+test('ancestorEvidence flags processes spawned by a strong agent', () => {
+  const tools = agentdetect.normalizeTools(undefined);
+  const list = [
+    { pid: 10, ppid: 1, exe: '/usr/local/bin/claude', tokens: [] },
+    { pid: 11, ppid: 10, exe: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', tokens: ['--no-sandbox'] },
+    { pid: 12, ppid: 11, exe: '/usr/bin/python3', tokens: ['/tmp/child.py'] }
+  ];
+  const base = agentdetect.detectSessions(list, tools);
+  const extra = agentdetect.ancestorEvidence(list, base);
+  const spawned = extra.filter((s) => s.via === 'spawned');
+  assert.strictEqual(spawned.length, 2, 'chrome and its python child count as agent-spawned');
+  assert.ok(spawned.every((s) => s.score === 2 && s.tool === 'claude-code'));
+});
+
+test('ancestorEvidence returns nothing without a strong ancestor', () => {
+  const list = [
+    { pid: 20, ppid: 1, exe: '/usr/bin/node', tokens: ['aider'] },
+    { pid: 21, ppid: 20, exe: '/usr/bin/ssh', tokens: ['-o', 'x'] }
+  ];
+  const base = agentdetect.detectSessions(list, agentdetect.normalizeTools(undefined));
+  assert.strictEqual(agentdetect.ancestorEvidence(list, base).length, 0, 'weak word ancestor spawns nothing');
+});
+
+/* ------------------- confidence + snooze decisions -------------------- */
+
+test('shouldEngage needs confidence >= minConfidence', () => {
+  const base = { mode: 'off', failClosed: false, autoProtect: undefined, snoozedUntil: {}, now: 1000 };
+  assert.strictEqual(autoprotect.shouldEngage(Object.assign({}, base, { sessions: [{ tool: 'aider', score: 1 }] })), false, 'one weak word (1) < 3');
+  assert.strictEqual(autoprotect.shouldEngage(Object.assign({}, base, { sessions: [{ tool: 'aider', score: 1 }, { tool: 'goose', score: 1 }] })), false, 'two weak words (2) < 3');
+  assert.strictEqual(autoprotect.shouldEngage(Object.assign({}, base, { sessions: [{ tool: 'codex-cli', score: 3 }] })), true, 'one real agent (3) engages');
+  assert.strictEqual(autoprotect.shouldEngage(Object.assign({}, base, { sessions: [{ tool: 'claude-code-wrapper', score: 2 }, { tool: 'aider', score: 1 }] })), true, 'wrapper + word (3) engages');
+});
+
+test('shouldEngage honors a higher minConfidence', () => {
+  const r = autoprotect.shouldEngage({
+    mode: 'off', failClosed: false,
+    autoProtect: { minConfidence: 5 },
+    sessions: [{ tool: 'codex-cli', score: 3 }], snoozedUntil: {}, now: 1000
+  });
+  assert.strictEqual(r, false, 'score 3 < minConfidence 5');
+});
+
+test('shouldEngage: a snoozed tool alone does not engage', () => {
+  const now = 1000;
+  const r = autoprotect.shouldEngage({
+    mode: 'off', failClosed: false, autoProtect: undefined,
+    sessions: [{ tool: 'claude-code', score: 3 }],
+    snoozedUntil: { 'claude-code': now + 60000 }, now
+  });
+  assert.strictEqual(r, false);
+});
+
+test('shouldEngage: a different non-snoozed tool still engages', () => {
+  const now = 1000;
+  const r = autoprotect.shouldEngage({
+    mode: 'off', failClosed: false, autoProtect: undefined,
+    sessions: [{ tool: 'claude-code', score: 3 }, { tool: 'opencode', score: 3 }],
+    snoozedUntil: { 'claude-code': now + 60000 }, now
+  });
+  assert.strictEqual(r, true, 'opencode is not snoozed');
+});
+
+test('shouldEngage: an expired snooze re-allows the tool', () => {
+  const now = 1000;
+  const r = autoprotect.shouldEngage({
+    mode: 'off', failClosed: false, autoProtect: undefined,
+    sessions: [{ tool: 'claude-code', score: 3 }],
+    snoozedUntil: { 'claude-code': now - 1 }, now
+  });
+  assert.strictEqual(r, true);
+});
+
+test('normalizeAutoProtect validates the new settings keys', () => {
+  const d = autoprotect.normalizeAutoProtect(undefined);
+  assert.strictEqual(d.minDwellMs, 2000);
+  assert.strictEqual(d.minConfidence, 3);
+  assert.strictEqual(d.snoozeMs, 30 * 60 * 1000);
+  const clamped = autoprotect.normalizeAutoProtect({ minDwellMs: 1, minConfidence: 0, snoozeMs: -5 });
+  assert.strictEqual(clamped.minDwellMs, 500, 'dwell clamped low');
+  assert.strictEqual(clamped.minConfidence, 1, 'confidence clamped low');
+  assert.strictEqual(clamped.snoozeMs, 0, 'snooze clamped low');
+  const set = autoprotect.normalizeAutoProtect({ tools: [{ name: 'x' }], ignore: [{ tool: 'y' }] });
+  assert.deepStrictEqual(set.tools, [{ name: 'x' }]);
+  assert.deepStrictEqual(set.ignore, [{ tool: 'y' }]);
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
