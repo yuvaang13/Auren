@@ -1,14 +1,16 @@
 # Auren — AI Agent Guardrail
 
-A small desktop app that blocks specific websites at the **network level** on
-your whole computer — every browser, every app — and makes it hard for an AI
-agent to turn that protection off.
+A desktop app that protects your whole computer from AI-agent overreach.
+Flip **Protection Mode** on and Auren blocks the websites, apps, and
+OS-level network access you don't want any agent to touch — in every
+browser, every app, and the terminal — from one switch. Turning it off
+(or quitting the app) requires your fingerprint or device passcode, so an
+agent can't quietly undo it.
 
-> **Honest positioning.** Auren is a **cooperative guardrail**, not a security
-> boundary. It adds friction and oversight for ordinary AI-agent sessions. It
-> does **not** claim to stop a fully adversarial agent with deep system access.
-> Everything below is honest about what it can and can't do — read
-> [What this does NOT do yet](#what-this-does-not-do-yet) before relying on it.
+> Auren is a practical guardrail for everyday AI-agent sessions — and like
+> any tool that runs on the machine it protects, its honest limits are
+> documented below. Read [What this does NOT do yet](#what-this-does-not-do-yet)
+> to see exactly where it stands.
 
 ## What this actually does
 

@@ -3,7 +3,7 @@
   "productName": "auren",
   "version": "0.4.0",
   "private": true,
-  "description": "Auren — system-wide DNS-level website blocking for AI-agent guardrails. Not an adversarial-proof security boundary.",
+  "description": "Auren — system-wide network-level protection for AI-agent sessions: block websites, apps, terminal access, and autofill from one biometric-gated switch.",
   "license": "Apache-2.0",
   "main": "src/main.js",
   "scripts": {
