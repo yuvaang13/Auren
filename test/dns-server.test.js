@@ -165,7 +165,21 @@ async function daemonTest() {
     stdio: 'ignore'
   });
 
-  const kill = () => new Promise((res) => { try { child.kill('SIGTERM'); child.once('exit', () => res()); setTimeout(res, 3000); } catch { res(); } });
+  const kill = () => new Promise((res) => {
+    let resolved = false;
+    const finish = () => { if (!resolved) { resolved = true; res(); } };
+    try {
+      child.kill('SIGTERM');
+      child.once('exit', finish);
+      setTimeout(() => {
+        if (!resolved) {
+          try { child.kill('SIGKILL'); } catch {}
+          setTimeout(finish, 1000);
+        }
+      }, 2000);
+    } catch { finish(); }
+    setTimeout(finish, 4000);
+  });
 
   await sleep(1800); // let it bind + reconcile
 
@@ -330,7 +344,10 @@ async function portConflictTest() {
     const act = fs.readFileSync(actFile, 'utf8');
     assert.ok(act.includes('dns_conflict'), 'the conflict must land in the activity log');
   } finally {
-    try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    try {
+      child.kill('SIGTERM');
+      await new Promise((r) => { child.once('exit', r); setTimeout(r, 2000); });
+    } catch {}
     await sleep(500);
     try { udp.close(); } catch { /* ignore */ }
     try { tcp.close(); } catch { /* ignore */ }
@@ -399,7 +416,10 @@ async function proxyFallbackTest() {
     assert.ok(pac.includes('FindProxyForURL'), 'PAC served on the fallback port');
     assert.ok(pac.includes('PROXY 127.0.0.1:' + (proxyPort + 1)), 'PAC embeds the fallback port');
   } finally {
-    try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    try {
+      child.kill('SIGTERM');
+      await new Promise((r) => { child.once('exit', r); setTimeout(r, 2000); });
+    } catch {}
     await sleep(500);
     try { squatter.close(); } catch { /* ignore */ }
   }

@@ -23,8 +23,12 @@ function psBin() {
 }
 
 function runPS(script) {
-  const r = spawnSync(psBin(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
-  return { status: r.status, stdout: (r.stdout || ''), stderr: (r.stderr || '') };
+  try {
+    const r = spawnSync(psBin(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+    return { status: r.status ?? -1, stdout: (r.stdout || ''), stderr: (r.stderr || '') };
+  } catch (err) {
+    return { status: -1, stdout: '', stderr: err.message || String(err) };
+  }
 }
 
 function parseLines(out) {

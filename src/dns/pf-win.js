@@ -33,7 +33,11 @@ function psBin() {
 }
 
 function runPS(script) {
-  return spawnSync(psBin(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8' });
+  try {
+    return spawnSync(psBin(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8' });
+  } catch (err) {
+    return { status: -1, stdout: '', stderr: err.message || String(err) };
+  }
 }
 
 // Parse the shared buildAnchorRules() output into Windows Firewall rule

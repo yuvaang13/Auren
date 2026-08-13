@@ -34,8 +34,12 @@ function psBin() {
 }
 
 function runPS(script) {
-  const r = execFileSync(psBin(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-  return String(r || '').trim();
+  try {
+    const r = execFileSync(psBin(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    return String(r || '').trim();
+  } catch (err) {
+    return err.message || String(err);
+  }
 }
 
 function psQuote(s) {

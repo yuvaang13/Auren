@@ -82,7 +82,7 @@ function readConfigFile(file) {
 function writeConfigFile(file, cfg) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify({
+  const content = JSON.stringify({
     version: 1,
     mode: cfg.mode,
     blocklist: cfg.blocklist,
@@ -94,8 +94,17 @@ function writeConfigFile(file, cfg) {
     dohHosts: normalizeDohHosts(cfg.dohHosts),
     proxyBlock: cfg.proxyBlock !== false,
     autofillBlock: cfg.autofillBlock !== false
-  }, null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  }, null, 2) + '\n';
+  fs.writeFileSync(tmp, content, { mode: 0o600 });
+  try {
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    if (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES') {
+      try { fs.copyFileSync(tmp, file); } finally { try { fs.unlinkSync(tmp); } catch {} }
+    } else {
+      throw err;
+    }
+  }
 }
 
 // HMAC-SHA256 integrity over the on-disk bytes. `config.sig` is written by the
@@ -116,7 +125,19 @@ function verifyData(data, key, sigHex) {
 // Writes the plaintext config for the daemon PLUS its signature sidecar.
 function writeSignedConfig(file, cfg, key) {
   writeConfigFile(file, cfg);
-  fs.writeFileSync(file + SIG_SUFFIX, signData(fs.readFileSync(file), key) + '\n', { mode: 0o600 });
+  const sigContent = signData(fs.readFileSync(file), key) + '\n';
+  const sigFile = file + SIG_SUFFIX;
+  const tmpSig = sigFile + '.tmp';
+  fs.writeFileSync(tmpSig, sigContent, { mode: 0o600 });
+  try {
+    fs.renameSync(tmpSig, sigFile);
+  } catch (err) {
+    if (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES') {
+      try { fs.copyFileSync(tmpSig, sigFile); } finally { try { fs.unlinkSync(tmpSig); } catch {} }
+    } else {
+      throw err;
+    }
+  }
 }
 
 function readConfig(userDataDir) {

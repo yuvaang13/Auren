@@ -53,8 +53,12 @@ function deletePolicyCmds(browser) {
 }
 
 function run(argv) {
-  const r = spawnSync(regBin(), argv, { encoding: 'utf8' });
-  return { status: r.status, stdout: (r.stdout || ''), stderr: (r.stderr || '') };
+  try {
+    const r = spawnSync(regBin(), argv, { encoding: 'utf8' });
+    return { status: r.status ?? -1, stdout: (r.stdout || ''), stderr: (r.stderr || '') };
+  } catch (err) {
+    return { status: -1, stdout: '', stderr: err.message || String(err) };
+  }
 }
 
 // Writes every policy value for every browser. A browser is "covered" when all

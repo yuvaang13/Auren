@@ -794,6 +794,10 @@ function shutdown() {
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+// Windows: also handle exit signals from GenerateConsoleCtrlEvent when stdio is ignored
+if (process.platform === 'win32') {
+  process.on('exit', (code) => { if (code !== 0) shutdown(); });
+}
 
 (async () => {
   log('info', 'daemon starting (dns-enabled=' + DNS_ENABLED + ' port=' + PORT + ')');

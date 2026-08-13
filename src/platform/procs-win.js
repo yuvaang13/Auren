@@ -25,8 +25,12 @@ function psBin() {
 }
 
 function runPS(script) {
-  const r = spawnSync(psBin(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-  return { status: r.status, stdout: (r.stdout || ''), stderr: (r.stderr || '') };
+  try {
+    const r = spawnSync(psBin(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    return { status: r.status ?? -1, stdout: (r.stdout || ''), stderr: (r.stderr || '') };
+  } catch (err) {
+    return { status: -1, stdout: '', stderr: err.message || String(err) };
+  }
 }
 
 // Tokenize a command line keeping quoted groups intact ("C:\Program Files\...").
