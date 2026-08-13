@@ -181,7 +181,7 @@ async function daemonTest() {
     setTimeout(finish, 4000);
   });
 
-  await sleep(1800); // let it bind + reconcile
+  await sleep(3000); // let it bind + reconcile (Windows CI can be slower)
 
   try {
     await test('daemon: blocks the configured domain in real time', async () => {
