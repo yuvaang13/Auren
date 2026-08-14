@@ -238,15 +238,29 @@ async function daemonTest() {
       });
     }
 
-    await test('daemon: tampered config fails closed (blocks everything)', async () => {
-      // Edit the config file directly WITHOUT updating the signature, like an
-      // agent would. The daemon must refuse to trust it and deny all lookups.
-      fs.writeFileSync(cfgFile, JSON.stringify({ version: 1, mode: 'off', blocklist: [] }));
+    await test('daemon: tampered config keeps the last verified policy (no deny-all)', async () => {
+      // Establish a verified baseline: protection ON, bank.com blocked,
+      // example.org allowed.
+      writeCfg('on', ['bank.com'], false);
       await sleep(1500);
-      const r = await query(port, 'example.org');
-      assert.strictEqual(r.status, 'NXDOMAIN');
+      const base = await query(port, 'example.org');
+      assert.strictEqual(base.status, 'NOERROR');
+
+      // Rewrite the config directly WITHOUT updating the signature, like an
+      // agent would. The daemon must refuse to trust it: the tampered content
+      // (mode off, block list removed, deny-all requested) must NOT take
+      // effect, the last verified policy keeps running, and — unlike a
+      // deny-all — unrelated traffic keeps flowing. The heartbeat reports the
+      // degraded integrity.
+      fs.writeFileSync(cfgFile, JSON.stringify({ version: 1, mode: 'off', blocklist: [], failClosed: true }));
+      await sleep(1500);
+      const blocked = await query(port, 'bank.com');
+      assert.strictEqual(blocked.status, 'NXDOMAIN', 'last verified block list must still be enforced');
+      const allowed = await query(port, 'example.org');
+      assert.strictEqual(allowed.status, 'NOERROR', 'unrelated traffic must not be denied');
       const hb = JSON.parse(fs.readFileSync(hbFile, 'utf8'));
-      assert.strictEqual(hb.integrityOk, false);
+      assert.strictEqual(hb.integrityOk, false, 'heartbeat must report degraded integrity');
+      assert.strictEqual(hb.failClosed, false, 'tampered failClosed must not be honored');
     });
 
     await test('daemon: blocked lookups land in the activity log', async () => {

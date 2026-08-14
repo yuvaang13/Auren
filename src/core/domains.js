@@ -136,6 +136,9 @@ function validateBlockDomain(input) {
 // The registrable (apex) domain of a hostname — the domain a registrant
 // actually controls. "mail.google.com" -> "google.com", "example.co.uk" ->
 // "example.co.uk". Returns '' for empty/invalid input. Pure.
+//
+// NOTE: this is informational only. Blocking is exact-or-subdomain
+// (see expandBlocklist), so a listed subdomain never expands to its apex.
 function registrableDomain(hostname) {
   const h = normalizeDomain(hostname);
   if (!h) return '';
@@ -146,23 +149,17 @@ function registrableDomain(hostname) {
   return last2;
 }
 
-// The effective blocklist: each entry plus its registrable domain, deduped.
-// Blocking a subdomain therefore also blocks its apex. Without this, browsers
-// reuse an existing pooled HTTPS connection to the apex's shared front-end
-// (HTTP/2 connection coalescing — the TLS cert covers *.apex) and load the
-// blocked subdomain without ever issuing a new DNS lookup or proxy CONNECT for
-// it. Discord is always re-resolved so it stays blocked; Google subdomains
-// (mail.google.com etc.) ride an existing allowed connection to the same
-// front-end and slip past both gates. Blocking the apex closes that hole: no
-// *.apex front-end can be resolved or connected to at all.
+// The effective blocklist: each normalized entry, deduped, in order. Matching
+// is exact-or-subdomain (domainMatches), so a listed domain covers itself and
+// its subdomains but never a sibling — blocking mail.google.com does NOT block
+// google.com, docs.google.com, or any other Google property. That keeps
+// unrelated services reachable while still blocking exactly what was listed.
 function expandBlocklist(entries) {
   const out = new Set();
   for (const e of (Array.isArray(entries) ? entries : [])) {
     const d = normalizeDomain(e);
     if (!d) continue;
     out.add(d);
-    const apex = registrableDomain(d);
-    if (apex) out.add(apex);
   }
   return Array.from(out);
 }

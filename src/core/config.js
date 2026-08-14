@@ -109,8 +109,8 @@ function writeConfigFile(file, cfg) {
 
 // HMAC-SHA256 integrity over the on-disk bytes. `config.sig` is written by the
 // main process next to `config.json`; the root daemon verifies it before
-// trusting the file, so an edit made outside the app fails verification and
-// the daemon fails closed (blocks everything).
+// trusting the file, so an edit made outside the app fails verification and the
+// daemon ignores the unverified file, keeping the last verified policy.
 function signData(data, key) {
   return crypto.createHmac('sha256', key).update(data).digest('hex');
 }

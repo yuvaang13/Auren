@@ -13,18 +13,24 @@
  *   - The root DNS daemon is a separate process that cannot do Electron IPC,
  *     so it consumes a signed read-only snapshot (config.json + config.sig)
  *     written here. It verifies the signature before trusting a single byte and
- *     fails closed if verification fails. It has no independent, writable copy.
+ *     keeps the last verified policy if verification fails. It has no
+ *     independent, writable copy.
  *
  * Fail-closed model (see README "Fail-closed guarantees and limits"):
- *   - Config tamper, corrupt encrypted store, missing key, or a silent daemon
- *     all surface as `degraded` and cause every gated surface (DNS via the
- *     daemon's deny-all mode, agent:inspect-action) to refuse by default.
+ *   - A corrupt encrypted store, a missing key, or a silent daemon all surface
+ *     as `degraded` and cause every gated surface (agent:inspect-action, the
+ *     loopback bridge) to refuse by default.
+ *   - An unverifiable config.json is IGNORED by the daemon (not denied on): it
+ *     keeps enforcing the last verified policy — so a tampered file can neither
+ *     add blocks nor weaken the enforced ones — and reports integrityOk:false
+ *     in its heartbeat.
  *
  * DNS enforcement itself lives in the root daemon (see src/dns/daemon.js),
  * which runs independently of this process. On a graceful quit this process
  * writes a signed "mode: off" config so the daemon restores system DNS and
- * nothing stays blocked after Auren closes; killing the daemon itself leaves
- * system DNS pointed at a dead resolver (deny-all), not open access.
+ * nothing stays blocked after Auren closes; killing the daemon while
+ * protection is on leaves system DNS pointed at a dead resolver (denied until
+ * launchd restarts it), not open access.
  */
 
 'use strict';
@@ -502,7 +508,7 @@ function persist() {
 function ensureFiles() {
   fs.mkdirSync(USER_DATA, { recursive: true });
   storeIntegrityKey = store.loadOrCreateKey(USER_DATA);
-  if (!fs.existsSync(CONFIG_FILE)) config.writeConfig(USER_DATA, config.DEFAULT_CONFIG);
+  if (!fs.existsSync(CONFIG_FILE)) config.writeSignedConfig(CONFIG_FILE, config.DEFAULT_CONFIG, storeIntegrityKey);
   try { fs.writeFileSync(ACTIVITY_FILE, '', { flag: 'a' }); } catch {}
 
   // Verify settings.json's signature up front so the tampered flag and its

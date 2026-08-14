@@ -62,6 +62,7 @@ const proxyServer = loadProxy('server.js');
 const { domainMatches, expandBlocklist } = load('domains.js');
 const { readConfigFile, verifyData } = load('config.js');
 const { makeEntry, appendActivity } = load('activity.js');
+const { mergeState } = load('state.js');
 const apps = load('apps.js');
 const autofill = loadPlatform('autofill.js');
 // Platform DNS primitives (networksetup/scutil on macOS, PowerShell DnsClient
@@ -141,15 +142,14 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 20;
+const DAEMON_VERSION = 22;
 
 let mode = 'off';
 let blocklist = [];
-// Blocklist plus each entry's registrable domain (see expandBlocklist): the
-// list isBlocked() actually consults. Blocking mail.google.com therefore also
-// blocks google.com, closing the HTTP/2 connection-coalescing bypass where a
-// browser rides an existing pooled connection to the shared front-end and
-// never issues a fresh DNS lookup / CONNECT for the blocked subdomain.
+// The list isBlocked() actually consults: each normalized entry, deduped.
+// Matching is exact-or-subdomain, so blocking mail.google.com does NOT block
+// google.com — unrelated services on the same registrable domain stay
+// reachable.
 let effectiveBlocklist = [];
 let appBlocklist = [];
 let resolver = null;
@@ -199,11 +199,21 @@ let lastDohSweep = 0;
 let lastMode = 'off';
 let lastBlocklistJson = '[]';
 
-// Fail-closed integrity state. When true, EVERY outbound lookup is refused
-// (NXDOMAIN) and system DNS stays pointed at the local resolver, regardless of
-// what the config file claims. Set when the config signature doesn't verify,
-// the config is unreadable, or the signing key is unavailable.
+// Integrity state. Two independent knobs:
+//
+//   failClosed       — explicit deny-all from a VERIFIED config ("failClosed":
+//                      true). Every outbound lookup is refused and system DNS
+//                      stays pointed at the local resolver.
+//   integrityDegraded — the config could not be VERIFIED (stale/missing
+//                      signature, unreadable file, missing key). The daemon
+//                      then keeps enforcing the last verified policy instead of
+//                      trusting (or denying on behalf of) the unverified file:
+//                      unrelated traffic keeps flowing and a tampered config
+//                      can neither add blocks nor weaken the enforced ones.
+//                      Surfaced as integrityOk:false in the heartbeat so the
+//                      app can warn.
 let failClosed = false;
+let integrityDegraded = false;
 let integrityKey = null;
 let integrityReported = false;
 
@@ -216,11 +226,13 @@ function log(level, msg) {
 
 // Load the HMAC key that the main process uses to sign config.json. The daemon
 // runs as root, so it can read the user's 0600 key file. If the key is missing
-// or unreadable, the daemon cannot verify its config -> fail closed.
+// or unreadable, the daemon cannot verify its config: it degrades (keeps the
+// last verified policy, reports integrityOk:false) instead of denying every
+// lookup.
 function loadIntegrityKey() {
   if (!KEY_FILE) {
-    log('error', 'AUREN_KEY not set — cannot verify config; failing closed');
-    failClosed = true;
+    log('error', 'AUREN_KEY not set — cannot verify config; degrading (keeping last verified policy)');
+    integrityDegraded = true;
     return;
   }
   try {
@@ -229,7 +241,7 @@ function loadIntegrityKey() {
     integrityKey = key;
   } catch (err) {
     log('error', 'integrity key unreadable: ' + err.message);
-    failClosed = true;
+    integrityDegraded = true;
   }
 }
 
@@ -238,7 +250,7 @@ function loadIntegrityKey() {
 // unprivileged app must be able to read it. It contains no secrets.
 function writeHeartbeat() {
   if (!HEARTBEAT) return;
-  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, version: DAEMON_VERSION, mode, failClosed, pf: pfActive, proxy: proxyActive, proxyPort: proxyActive ? proxyPort : null, dnsConflict, integrityOk: !failClosed, lastReconcile: lastReconcileDoneAt }) + '\n';
+  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, version: DAEMON_VERSION, mode, failClosed, pf: pfActive, proxy: proxyActive, proxyPort: proxyActive ? proxyPort : null, dnsConflict, integrityOk: !integrityDegraded, lastReconcile: lastReconcileDoneAt }) + '\n';
   try { fs.writeFileSync(HEARTBEAT, body, { mode: 0o644 }); } catch (err) { log('error', 'heartbeat write failed: ' + err.message); }
 }
 
@@ -249,8 +261,15 @@ function saveState() {
 
 function loadState() {
   if (!STATE) return;
-  try { state = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
-  if (!state || typeof state !== 'object' || !state.services) state = { services: {}, applied: false };
+  let disk = null;
+  try { disk = JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch {}
+  // Merge, don't replace: applyProxy records each service's prior proxy config
+  // in state.proxy and this loop re-reads state.json before the proxy reconcile
+  // runs. A plain replace would throw those in-memory records away and
+  // clearProxy would then have nothing to restore — leaving the system PAC
+  // pointed at a stopped proxy, which breaks ALL HTTPS (the exact "internet is
+  // broken after protection turns off" symptom).
+  state = mergeState(state, disk);
 }
 
 // Cheap config-change probe (~0.02 ms, no subprocess): the desktop app writes
@@ -333,7 +352,7 @@ function discoverUpstream() {
 function isBlocked(name) {
   const n = name.toLowerCase();
   if (!n || n === 'localhost' || n.endsWith('.local') || n.endsWith('.arpa') || n === 'localhost.') return false;
-  // Fail-closed: if we can't verify our own config, refuse everything outbound.
+  // Explicit fail-closed (from a verified config): refuse everything outbound.
   if (failClosed) return true;
   if (mode !== 'on') return false;
   for (const d of effectiveBlocklist) {
@@ -467,13 +486,20 @@ async function reconcileInner() {
     if (integrityKey && verifyData(raw, integrityKey, sig)) {
       cfg = readConfigFile(CONFIG);
       failClosed = !!cfg.failClosed;
+      integrityDegraded = false;
     } else {
       if (!integrityReported) {
         logActivity(makeEntry('daemon', 'integrity_failed', null, 'config signature verification failed'));
-        log('error', 'config signature verification FAILED — failing closed (blocking all outbound)');
+        log('error', 'config signature verification FAILED — keeping the last verified policy (config ignored)');
         integrityReported = true;
       }
-      failClosed = true;
+      // Fail-safe, not fail-closed: the unverified file is ignored entirely.
+      // mode/blocklist/appBlocklist/etc. keep their last verified values, so a
+      // tampered config can neither add blocks nor weaken the ones already
+      // enforced. (Explicit deny-all via cfg.failClosed is honored only from a
+      // VERIFIED config.) The heartbeat reports integrityOk:false so the app
+      // warns that the policy is the previously verified one.
+      integrityDegraded = true;
     }
   } catch (err) {
     if (!integrityReported) {
@@ -481,7 +507,7 @@ async function reconcileInner() {
       integrityReported = true;
     }
     log('error', 'readConfig: ' + err.message);
-    failClosed = true;
+    integrityDegraded = true;
   }
 
   if (cfg) {
@@ -495,20 +521,9 @@ async function reconcileInner() {
     dohHosts = Array.isArray(cfg.dohHosts) ? cfg.dohHosts : [];
     proxyBlock = cfg.proxyBlock !== false;
     autofillBlock = cfg.autofillBlock !== false;
-  } else {
-    // Fail-closed: we can't trust the config, so block everything. App
-    // blocking keeps the last-verified list — the config is untrusted now,
-    // but the previously verified blocks are still the safe thing to enforce.
-    mode = 'on';
-    blocklist = [];
-    effectiveBlocklist = [];
-    terminalBlock = true;
-    terminalAllowlist = { ports: [], hosts: [] };
-    dohBlock = true;
-    dohHosts = [];
-    proxyBlock = true;
-    autofillBlock = true;
   }
+  // No cfg (unverifiable or unreadable): keep the last verified values above —
+  // the daemon never widens enforcement based on an untrusted file.
 
   // Minimum-safety floor (root-enforced): while we are blocking, refuse to
   // disable terminal/DoH blocking or let the allowlist carve out the built-in
@@ -642,8 +657,8 @@ async function reconcileInner() {
   // Cheap change detection (no subprocesses): the app writes config.json only
   // when something actually changed, so an mtime diff means a reconcile is due.
   // A missing config is treated as a change on the transition (the read above
-  // already flipped us to fail-closed); updating lastCfgMtime either way stops
-  // a vanished file from re-triggering a full reconcile on every tick.
+  // already degraded us); updating lastCfgMtime either way stops a vanished
+  // file from re-triggering a full reconcile on every tick.
   const cfgMtime = statCfgMtime();
   const cfgChanged = cfgMtime !== lastCfgMtime;
   lastCfgMtime = cfgMtime;
@@ -684,6 +699,11 @@ async function reconcileInner() {
     const wantProxyNet = PROXY_NET_ENABLED && PROXY_ENABLED && proxyActive && proxyBlock && (mode === 'on' || failClosed);
     const proxyRes = wantProxyNet ? proxyops.applyProxy(state, pacUrl) : proxyops.clearProxy(state, pacUrl);
     if (proxyRes.changed) {
+      // Persist the per-service proxy records (and their removal) so the PAC is
+      // restorable after a daemon restart — without this, a restart while
+      // protection is ON loses the user's original proxy config and turning
+      // protection off leaves the system pointed at a stopped proxy.
+      saveState();
       if (wantProxyNet) {
         logActivity(makeEntry('daemon', 'proxy_applied'));
         log('info', 'system HTTPS proxy pointed at ' + pacUrl);
@@ -820,9 +840,10 @@ function sweepDohCounters() {
 function shutdown() {
   log('info', 'shutting down');
   if (mode === 'on' || failClosed) {
-    // Fail-closed: leave system DNS pointed at the local resolver. Nothing
-    // answers while we're down, so outbound stays denied; launchd restarts us.
-    log('info', 'fail-closed: leaving DNS pointed at local resolver (deny-all while down)');
+    // Protection is live (or explicitly deny-all): leave system DNS pointed at
+    // the local resolver. Nothing answers while we're down, so outbound stays
+    // denied until launchd restarts us — never hand the machine back open.
+    log('info', 'protection was on: leaving DNS pointed at local resolver (denied while down)');
   } else {
     restoreDns();
     try { proxyops.clearProxy(state, pacUrl); } catch (err) { log('error', 'proxy restore failed: ' + err.message); }

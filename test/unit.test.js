@@ -90,15 +90,23 @@ test('registrableDomain respects multi-label public suffixes', () => {
   assert.strictEqual(domains.registrableDomain('mail.google.com.au'), 'google.com.au');
 });
 
-test('expandBlocklist adds the apex of every blocked subdomain', () => {
+test('expandBlocklist keeps exact entries without apex expansion', () => {
   const out = domains.expandBlocklist(['mail.google.com', 'discord.com', 'a.b.example.co.uk']);
   assert.ok(out.includes('mail.google.com'));
-  assert.ok(out.includes('google.com'));
+  assert.ok(!out.includes('google.com'), 'blocking a subdomain must not expand to its apex');
   assert.ok(out.includes('discord.com'));
   assert.ok(out.includes('a.b.example.co.uk'));
-  assert.ok(out.includes('example.co.uk'));
-  assert.strictEqual(out.length, 5);
+  assert.ok(!out.includes('example.co.uk'), 'blocking a subdomain must not expand to its apex');
+  assert.strictEqual(out.length, 3);
   assert.deepStrictEqual(domains.expandBlocklist([]), []);
+});
+
+test('domainMatches is exact-or-subdomain only (no sibling or apex expansion)', () => {
+  assert.ok(domains.domainMatches('mail.google.com', 'mail.google.com'));
+  assert.ok(domains.domainMatches('sub.mail.google.com', 'mail.google.com'));
+  assert.ok(!domains.domainMatches('google.com', 'mail.google.com'), 'the apex must NOT match a blocked subdomain');
+  assert.ok(!domains.domainMatches('docs.google.com', 'mail.google.com'), 'a sibling subdomain must NOT match');
+  assert.ok(!domains.domainMatches('gmail.com', 'mail.google.com'), 'an unrelated domain must NOT match');
 });
 
 console.log('config');
@@ -330,7 +338,7 @@ test('activity toPlainText stays plain-language', () => {
 test('activity toPlainText covers agent + daemon integrity outcomes', () => {
   assert.ok(activity.toPlainText(activity.makeEntry('agent', 'blocked', null, 'types=credit_card')).includes('blocked'));
   assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'enforcement_degraded')).includes('DEGRADED'));
-  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'integrity_failed')).includes('failed closed'));
+  assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'integrity_failed')).includes('keeping the last verified policy'));
   assert.ok(activity.toPlainText(activity.makeEntry('daemon', 'permissions_fixed')).includes('owner-only'));
 });
 
@@ -835,6 +843,24 @@ if (process.platform !== 'win32') {
     assert.ok(/empty rules file/.test(res.error));
   });
 }
+
+const state = require('../src/core/state');
+
+test('mergeState preserves in-memory state.proxy when disk lacks it', () => {
+  const inMemory = { services: {}, applied: false, proxy: { 'Wi-Fi': { enabled: false, url: '' } } };
+  const disk = { services: { 'Wi-Fi': ['127.0.0.1'] }, applied: true };
+  const merged = state.mergeState(inMemory, disk);
+  assert.deepStrictEqual(merged.proxy, inMemory.proxy, 'fresh proxy takeover must survive a disk re-read');
+  assert.deepStrictEqual(merged.services, disk.services, 'disk wins for keys it holds');
+  assert.strictEqual(merged.applied, true);
+});
+
+test('mergeState never throws on null or garbage disk', () => {
+  const inMemory = { services: {}, applied: false, proxy: { 'Wi-Fi': { enabled: false, url: '' } } };
+  assert.deepStrictEqual(state.mergeState(inMemory, null).proxy, inMemory.proxy);
+  assert.deepStrictEqual(state.mergeState(null, null), { services: {}, applied: false });
+  assert.deepStrictEqual(state.mergeState(undefined, 'garbage').proxy, undefined);
+});
 
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

@@ -92,7 +92,7 @@ function toPlainText(entry) {
       if (entry.outcome === 'recovery_attempted') return `Background service recovered automatically \u00b7 ${time}`;
       if (entry.outcome === 'recovered') return `Background service restarted and responding \u00b7 ${time}`;
       if (entry.outcome === 'recovery_failed') return `Background service could not be restored automatically${entry.note ? ': ' + entry.note : ''} \u00b7 ${time}`;
-      if (entry.outcome === 'integrity_failed') return `INTEGRITY FAILURE \u2014 block list could not be verified; Auren failed closed \u00b7 ${time}`;
+      if (entry.outcome === 'integrity_failed') return `INTEGRITY FAILURE \u2014 block list could not be verified; keeping the last verified policy \u00b7 ${time}`;
       if (entry.outcome === 'permissions_fixed') return `Storage permissions tightened to owner-only \u00b7 ${time}`;
       if (entry.outcome === 'doh_blocked') return `Known DoH/DoT endpoint blocked (${entry.note || 'attempt'}) \u00b7 ${time}`;
       if (entry.outcome === 'vm_detected') return `Virtualization detected (${entry.note || 'see note'}) \u2014 protection may not fully cover VM/container traffic \u00b7 ${time}`;

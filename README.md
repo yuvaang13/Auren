@@ -51,7 +51,8 @@ OS command gate blocks the pipeline before it runs.
   conversation.
 - **Layered, fail-closed defense in depth.** DNS, firewall, process, autofill,
   and OS-command gates stack together — and if Auren can't verify its own
-  enforcement, every surface refuses by default.
+  enforcement, every gated surface refuses by default (while the network layer
+  keeps enforcing the last verified policy).
 - **One policy, one switch.** Sites, apps, commands, autofill, and sensitive
   data all sit behind the same biometric-gated Protection Mode — nothing
   per-tool to configure or drift.
@@ -297,17 +298,25 @@ what is guaranteed and what is not.
   and `agent:inspect-action` to gate sensitive actions. No component should keep
   its own copy of block state.
 
-### 2. Fail-closed tamper detection
+### 2. Integrity and fail-safe tamper detection
 
-Auren's default on any verification failure is **block, not allow**:
+The tamper response is **fail-safe: ignore the unverifiable file, keep the last
+verified policy** — never block on behalf of a file Auren can't trust:
 
 - **Config tampering.** Editing `config.json` outside the app (without
   regenerating `config.sig`) fails signature verification. The daemon then
-  denies **every** outbound lookup (deny-all) and keeps system DNS pointed at
-  the local resolver, even if the tampered config claims mode is OFF.
+  **ignores the tampered file entirely**: it keeps enforcing the last verified
+  policy (mode, block list, firewall/autofill toggles), reports
+  `integrityOk: false` in its heartbeat so the app shows a degraded banner, and
+  logs an `integrity_failed` event. A tampered file can therefore neither add
+  blocks nor weaken the ones already enforced — and unrelated traffic keeps
+  flowing (this is what keeps a stale signature from breaking Spotify or any
+  other site not on the verified list). The daemon re-verifies every poll and
+  resumes the new policy as soon as the app rewrites a valid signed config.
 - **Encrypted-store corruption.** If `guardrail.dat` can't be decrypted, the
   app starts in a fail-closed state: mode ON, deny-all flag set, a notification
-  shown, and the event logged.
+  shown, and the event logged. This explicit `failClosed: true` is honored by
+  the daemon because it arrives in a *verified* config.
 - **Loose file permissions.** If storage files are found looser than 0600 at
   startup, Auren tightens them and logs a `permissions_fixed` event.
 - **Heartbeat / watchdog.** The daemon writes a heartbeat every ~2 s with a
@@ -382,15 +391,18 @@ Auren's default on any verification failure is **block, not allow**:
   public DNS-over-HTTPS/TLS providers; a client pointed at a resolver that
   isn't on the list bypasses it. `dohHosts` in `settings.json` can only
   *extend* the built-in list — the built-in servers stay blocked no matter what.
-- **Blocking a subdomain blocks its whole registrable domain.** Browsers reuse
-  an existing pooled HTTPS connection to a site's shared front-end (HTTP/2
-  connection coalescing — the TLS cert covers `*.apex`), which would let a
-  blocked subdomain load without any fresh DNS lookup or proxy CONNECT for it.
-  So blocking `mail.google.com` also blocks `google.com` (every subdomain and
-  the apex): the coalescing bypass is closed because no `*.apex` front-end can
-  be resolved or connected to at all. The trade-off is intentional — you cannot
-  carve out one service (Gmail) while leaving the rest of the registrant's
-  domain reachable.
+- **Blocking is exact-or-subdomain, never registrable-domain-wide.** Blocking
+  `mail.google.com` blocks `mail.google.com` and its subdomains only — not
+  `google.com`, not `docs.google.com`, not any other Google property. Matching
+  is "equals or subdomain of the listed domain", so unrelated services on the
+  same registrant's domain stay reachable. Trade-off: browsers can ride an
+  existing pooled HTTPS connection to a sibling subdomain's shared front-end
+  (HTTP/2 connection coalescing), which can let a blocked *subdomain* load
+  without a fresh DNS lookup or proxy CONNECT for it — that specific
+  coalescing bypass is not closed, and Auren's logs tell you when a blocked
+  hostname was actually reached. Blocking the registrable apex itself (add
+  `google.com`) closes the coalescing hole for everything under it, at the cost
+  of blocking the whole domain — the choice is yours per entry.
 - **The degraded watchdog covers the daemon**, not the full integrity of the
   machine. If the block list is copied and the copy is served by an attacker
   that also runs the daemon process, Auren can't tell the difference.
@@ -487,8 +499,10 @@ instead.
 - **Safety:** Auren only ever touches its own `auren` anchor — it never
   flushes or rewrites a pre-existing pf configuration, and never disables pf
   on teardown (an enabled pf with an empty anchor passes everything).
-- **Fail-closed:** if the signed config can't be verified, the daemon loads
-  the blocking rules too, matching the DNS deny-all posture.
+- **Fail-safe on unverifiable config:** if the signed config can't be verified,
+  the daemon ignores it and keeps enforcing the last verified policy (see
+  "Storage, integrity, and fail-closed guarantees") — an explicit `failClosed:
+  true` from a *verified* config still engages the full firewall.
 
 ### Layer 2 — a command gate for agents that run through Auren
 
@@ -539,8 +553,9 @@ hostnames are refused; everything else is piped through byte-for-byte.
   to a site without ever being able to read it.
 - **Same block list, same posture.** The proxy calls the daemon's own block
   decision function, so it enforces the same signed config as DNS — and it
-  fails closed with the same integrity checks. If the proxy can't start or the
-  system proxy can't be set, HTTPS that falls through still hits the DNS layer.
+  ignores an unverifiable config the same way (keeping the last verified
+  policy). If the proxy can't start or the system proxy can't be set, HTTPS
+  that falls through still hits the DNS layer.
 - **Honest limits.** The proxy only sees traffic that honors the system proxy
   (browsers and most apps do). A client that explicitly bypasses the proxy
   falls back to DNS + firewall coverage, and TCP 443 to arbitrary hosts still
@@ -617,7 +632,8 @@ the list or turn protection off.
 - **The daemon kills, and keeps killing.** Enforcement lives in the root
   daemon (so an app can't kill the enforcer back), scans processes every second,
   and is tied to the same Protection switch as DNS + firewall blocking. If the
-  daemon can't verify its config, app blocking fails closed with everything else.
+  daemon can't verify its config, it keeps enforcing the last verified policy
+  (the tampered list is never trusted).
 - **Safety floor:** the daemon refuses to add an entry whose path is its own
   interpreter or the daemon binary itself — a config that tries to point the
   kill-loop at Auren is rejected outright.
@@ -807,9 +823,9 @@ src/
     cache.js              flushes OS DNS caches on mode/block-list changes
     pf.js                 shared firewall rule engine + macOS pf anchor (block ping/ssh/DoH/...)
     pf-win.js             Windows Firewall translation of the same rule file
-    daemon.js             root service: verifies config signature, fails closed,
-                          writes heartbeat, reconciles DNS + firewall + apps + autofill,
-                          runs the resolver
+    daemon.js             root service: verifies config signature, keeps the last
+                          verified policy on mismatch, writes heartbeat, reconciles
+                          DNS + firewall + apps + autofill, runs the resolver
   platform/
     paths.js              platform-aware storage / spool / daemon paths
     biometrics.js         Touch ID / passcode (mac) | Windows Hello / UAC (win)
@@ -846,10 +862,11 @@ daemon's signed config / heartbeat / state):
   metadata). Only the main process reads or writes it.
 - `~/Library/Application Support/Auren/config.json` + `config.sig` — a
   **signed snapshot** exported by the app for the root daemon, which verifies
-  the signature on every poll and fails closed (deny-all) if it doesn't check
-  out. The daemon treats this file as untrusted input. It carries protection
-  mode, the site block list, the app block list, the terminal-block toggle,
-  the firewall allowlist, and the autofill-block toggle.
+  the signature on every poll and, if it doesn't check out, ignores the file
+  and keeps enforcing the last verified policy (reporting `integrityOk:
+  false`). The daemon treats this file as untrusted input. It carries
+  protection mode, the site block list, the app block list, the terminal-block
+  toggle, the firewall allowlist, and the autofill-block toggle.
 - `~/Library/Application Support/Auren/activity.jsonl` — the plain-language log.
 
 The macOS install lives in `/Library/LaunchDaemons/com.auren.guardrail.plist`
@@ -986,8 +1003,8 @@ OFF) and it runs normally again.
 **Does app blocking survive a daemon crash?**
 No process can out-muscle a broken daemon. If the daemon itself fails, App
 Blocking pauses with DNS + firewall until the LaunchDaemon restarts it; Auren
-logs the outage. If the daemon can't verify its config, everything fails closed
-(deny-all) instead.
+logs the outage. If the daemon can't verify its config, it keeps enforcing the
+last verified policy instead.
 
 **My VPN stopped working while protection is on.**
 VPNs sometimes force their own DNS, which can conflict with pointing DNS at
