@@ -14,39 +14,36 @@
         <stop offset="0.55" stop-color="#101319"/>
         <stop offset="1" stop-color="#08090b"/>
       </linearGradient>
-      <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#5eead4"/>
-        <stop offset="0.45" stop-color="#34d399"/>
+      <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#34d399"/>
+        <stop offset="0.45" stop-color="#0f9f6e"/>
         <stop offset="1" stop-color="#0f9f6e"/>
       </linearGradient>
-      <linearGradient id="shieldFill" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#34d399" stop-opacity="0.22"/>
-        <stop offset="1" stop-color="#0f9f6e" stop-opacity="0.08"/>
+      <linearGradient id="glassFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#34d399" stop-opacity="0.18"/>
+        <stop offset="1" stop-color="#0f9f6e" stop-opacity="0.10"/>
       </linearGradient>
-      <radialGradient id="glow" cx="0.5" cy="0.12" r="0.8">
-        <stop offset="0" stop-color="#34d399" stop-opacity="0.20"/>
+      <radialGradient id="glassGlow" cx="0.5" cy="0.15" r="0.6">
+        <stop offset="0" stop-color="#34d399" stop-opacity="0.12"/>
         <stop offset="1" stop-color="#34d399" stop-opacity="0"/>
       </radialGradient>
       <linearGradient id="innerHi" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#ffffff" stop-opacity="0.06"/>
+        <stop offset="0" stop-color="#ffffff" stop-opacity="0.04"/>
+        <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+      </linearGradient>
+      <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
+        <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.05"/>
         <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
       </linearGradient>
     </defs>
 
-    <rect x="0" y="0" width="1024" height="1024" rx="228" fill="url(#bg)"/>
-    <rect x="0" y="0" width="1024" height="1024" rx="228" fill="url(#glow)"/>
-    <rect x="0" y="0" width="1024" height="1024" rx="228" fill="url(#innerHi)"/>
-    <rect x="1" y="1" width="1022" height="1022" rx="227" stroke="#ffffff" stroke-opacity="0.08" stroke-width="2"/>
-
-    <g transform="translate(512 512) scale(1)">
-      <circle cx="0" cy="0" r="300" fill="#34d399" opacity="0.10"/>
-      <circle cx="0" cy="0" r="252" fill="none" stroke="#34d399" stroke-opacity="0.16" stroke-width="2"/>
-      <g transform="translate(-150 -164) scale(6.25)">
-        <path d="M24 4l17 5.7v10.6c0 9.3-6.4 17.3-17 21.7C13.4 37.6 7 29.6 7 20.3V9.7L24 4z" fill="url(#shieldFill)"/>
-        <path d="M24 4l17 5.7v10.6c0 9.3-6.4 17.3-17 21.7C13.4 37.6 7 29.6 7 20.3V9.7L24 4z" stroke="url(#shield)" stroke-width="2.1" stroke-linejoin="round"/>
-        <path d="M16.5 24l5.4 5.4L32.5 18.6" stroke="url(#shield)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-      </g>
-    </g>
+    <rect x="0" y="0" width="1024" height="1024" rx="256" fill="url(#bg)"/>
+    <rect x="0" y="0" width="1024" height="1024" rx="256" fill="url(#glass)"/>
+    <rect x="0" y="0" width="1024" height="1024" rx="256" fill="url(#glassFill)"/>
+    <circle cx="512" cy="384" r="180" fill="url(#glassGlow)"/>
+    <path d="M512 400 L512 380 M512 420 L512 400 M420 380 L512 380 L600 380 M420 420 L512 420 L600 420" stroke="#ffffff" stroke-width="1" stroke-opacity="0.4"/>
+    <rect x="400" y="340" width="240" height="80" rx="20" fill="url(#shine)"/>
   </svg>
 </body>
 </html>
