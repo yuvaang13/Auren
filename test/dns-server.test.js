@@ -299,6 +299,59 @@ async function daemonTest() {
 // A second daemon that can't bind its DNS port must say so in the heartbeat
 // (dnsConflict + activity entry) instead of silently running without DNS
 // enforcement — this is what surfaces the "port 53 taken" degraded banner.
+// Squat a port (UDP + TCP) so nothing else can bind it. On macOS/Linux two
+// Node sockets as the squatter are enough. On Windows that does NOT work: Node
+// sockets set SO_REUSEADDR (TCP) and Windows allows multiple UDP binds on one
+// port, so the daemon's resolver binds anyway, starts cleanly, and no conflict
+// is ever detected — the CI failure this returns a real squatter for. Real
+// port-53 squatters (VPN clients, DNS services) use exclusive binds, so on
+// Windows squat with a PowerShell child using .NET sockets with
+// ExclusiveAddressUse: the daemon's resolver then genuinely fails to bind, and
+// Get-NetTCPConnection (dnsops.portOwner) names the squatter exactly like it
+// would name a real one.
+async function squatPort(port) {
+  if (process.platform !== 'win32') {
+    const udp = dgram.createSocket('udp4');
+    const tcp = net.createServer();
+    await new Promise((res, rej) => { udp.once('error', rej); udp.bind(port, '127.0.0.1', res); });
+    await new Promise((res, rej) => { tcp.once('error', rej); tcp.listen(port, '127.0.0.1', res); });
+    return {
+      close: async () => { try { udp.close(); } catch { /* ignore */ } try { tcp.close(); } catch { /* ignore */ } }
+    };
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auren-squat-'));
+  const script = path.join(dir, 'squat.ps1');
+  const ready = path.join(dir, 'ready.txt');
+  const ps = [
+    'param([int]$p, [string]$ready)',
+    '$udp = New-Object System.Net.Sockets.UdpClient',
+    '$udp.Client.ExclusiveAddressUse = $true',
+    '$udp.Client.Bind((New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse("127.0.0.1"), $p)))',
+    '$tcp = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse("127.0.0.1"), $p)',
+    '$tcp.ExclusiveAddressUse = $true',
+    '$tcp.Start()',
+    'Set-Content -Path $ready -Value "ok"',
+    'Start-Sleep -Seconds 120'
+  ].join('\n');
+  fs.writeFileSync(script, ps, 'utf8');
+  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, String(port), ready], { stdio: 'ignore' });
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(ready)) {
+      return {
+        close: async () => {
+          try { child.kill(); } catch { /* ignore */ }
+          await new Promise((r) => { child.once('exit', r); setTimeout(r, 2000); });
+          try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+        }
+      };
+    }
+    await sleep(200);
+  }
+  try { child.kill(); } catch { /* ignore */ }
+  throw new Error('exclusive port squatter failed to come up');
+}
+
 async function portConflictTest() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auren-conflict-'));
   const cfgFile = path.join(dir, 'config.json');
@@ -312,10 +365,7 @@ async function portConflictTest() {
   config.writeSignedConfig(cfgFile, { version: 1, mode: 'on', blocklist: [], failClosed: false, appBlocklist: [] }, key);
 
   // Squat on the daemon's DNS port (UDP + TCP) so its resolver can't bind.
-  const udp = dgram.createSocket('udp4');
-  const tcp = net.createServer();
-  await new Promise((res, rej) => { udp.once('error', rej); udp.bind(port, '127.0.0.1', res); });
-  await new Promise((res, rej) => { tcp.once('error', rej); tcp.listen(port, '127.0.0.1', res); });
+  const squatter = await squatPort(port);
 
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'src', 'dns', 'daemon.js')], {
     env: Object.assign({}, process.env, {
@@ -350,8 +400,7 @@ async function portConflictTest() {
       await new Promise((r) => { child.once('exit', r); setTimeout(r, 2000); });
     } catch {}
     await sleep(500);
-    try { udp.close(); } catch { /* ignore */ }
-    try { tcp.close(); } catch { /* ignore */ }
+    await squatter.close();
   }
 }
 

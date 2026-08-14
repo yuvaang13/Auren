@@ -382,6 +382,15 @@ Auren's default on any verification failure is **block, not allow**:
   public DNS-over-HTTPS/TLS providers; a client pointed at a resolver that
   isn't on the list bypasses it. `dohHosts` in `settings.json` can only
   *extend* the built-in list — the built-in servers stay blocked no matter what.
+- **Blocking a subdomain blocks its whole registrable domain.** Browsers reuse
+  an existing pooled HTTPS connection to a site's shared front-end (HTTP/2
+  connection coalescing — the TLS cert covers `*.apex`), which would let a
+  blocked subdomain load without any fresh DNS lookup or proxy CONNECT for it.
+  So blocking `mail.google.com` also blocks `google.com` (every subdomain and
+  the apex): the coalescing bypass is closed because no `*.apex` front-end can
+  be resolved or connected to at all. The trade-off is intentional — you cannot
+  carve out one service (Gmail) while leaving the rest of the registrant's
+  domain reachable.
 - **The degraded watchdog covers the daemon**, not the full integrity of the
   machine. If the block list is copied and the copy is served by an attacker
   that also runs the daemon process, Auren can't tell the difference.
@@ -1013,4 +1022,6 @@ cooperative guardrail.
 
 ## License
 
-Apache-2.0 — see `LICENSE`.
+Proprietary. Auren is offered as a SaaS product; the source in this repository
+is not licensed for redistribution or modification. See the Auren Terms of
+Service for usage rights.

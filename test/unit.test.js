@@ -73,6 +73,34 @@ test('validateBlockDomain rejects IPs and junk', () => {
   assert.ok(!domains.validateBlockDomain('foo_example.com').ok);
 });
 
+test('registrableDomain collapses subdomains to the apex', () => {
+  assert.strictEqual(domains.registrableDomain('mail.google.com'), 'google.com');
+  assert.strictEqual(domains.registrableDomain('a.b.mail.google.com'), 'google.com');
+  assert.strictEqual(domains.registrableDomain('www.example.com'), 'example.com');
+  assert.strictEqual(domains.registrableDomain('discord.com'), 'discord.com');
+  assert.strictEqual(domains.registrableDomain('vlacs.org'), 'vlacs.org');
+  assert.strictEqual(domains.registrableDomain(''), '');
+});
+
+test('registrableDomain respects multi-label public suffixes', () => {
+  assert.strictEqual(domains.registrableDomain('mail.example.co.uk'), 'example.co.uk');
+  assert.strictEqual(domains.registrableDomain('foo.bar.com.au'), 'bar.com.au');
+  assert.strictEqual(domains.registrableDomain('www.example.jp'), 'example.jp');
+  assert.strictEqual(domains.registrableDomain('x.co.nz'), 'x.co.nz');
+  assert.strictEqual(domains.registrableDomain('mail.google.com.au'), 'google.com.au');
+});
+
+test('expandBlocklist adds the apex of every blocked subdomain', () => {
+  const out = domains.expandBlocklist(['mail.google.com', 'discord.com', 'a.b.example.co.uk']);
+  assert.ok(out.includes('mail.google.com'));
+  assert.ok(out.includes('google.com'));
+  assert.ok(out.includes('discord.com'));
+  assert.ok(out.includes('a.b.example.co.uk'));
+  assert.ok(out.includes('example.co.uk'));
+  assert.strictEqual(out.length, 5);
+  assert.deepStrictEqual(domains.expandBlocklist([]), []);
+});
+
 console.log('config');
 test('config round-trips mode and block list', () => {
   const dir = tmpDir();

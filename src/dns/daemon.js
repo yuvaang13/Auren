@@ -59,7 +59,7 @@ const { DnsResolver, DEFAULT_UPSTREAM } = require(path.join(__dirname, 'resolver
 const { flushDnsCacheAsync } = require(path.join(__dirname, 'cache.js'));
 const pf = require(path.join(__dirname, 'pf.js'));
 const proxyServer = loadProxy('server.js');
-const { domainMatches } = load('domains.js');
+const { domainMatches, expandBlocklist } = load('domains.js');
 const { readConfigFile, verifyData } = load('config.js');
 const { makeEntry, appendActivity } = load('activity.js');
 const apps = load('apps.js');
@@ -141,10 +141,16 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 19;
+const DAEMON_VERSION = 20;
 
 let mode = 'off';
 let blocklist = [];
+// Blocklist plus each entry's registrable domain (see expandBlocklist): the
+// list isBlocked() actually consults. Blocking mail.google.com therefore also
+// blocks google.com, closing the HTTP/2 connection-coalescing bypass where a
+// browser rides an existing pooled connection to the shared front-end and
+// never issues a fresh DNS lookup / CONNECT for the blocked subdomain.
+let effectiveBlocklist = [];
 let appBlocklist = [];
 let resolver = null;
 let upstreamApplied = false;
@@ -330,7 +336,7 @@ function isBlocked(name) {
   // Fail-closed: if we can't verify our own config, refuse everything outbound.
   if (failClosed) return true;
   if (mode !== 'on') return false;
-  for (const d of blocklist) {
+  for (const d of effectiveBlocklist) {
     if (domainMatches(n, d)) return true;
   }
   return false;
@@ -481,6 +487,7 @@ async function reconcileInner() {
   if (cfg) {
     mode = cfg.mode;
     blocklist = cfg.blocklist;
+    effectiveBlocklist = expandBlocklist(blocklist);
     appBlocklist = cfg.appBlocklist;
     terminalBlock = cfg.terminalBlock !== false;
     terminalAllowlist = cfg.terminalAllowlist || { ports: [], hosts: [] };
@@ -494,6 +501,7 @@ async function reconcileInner() {
     // but the previously verified blocks are still the safe thing to enforce.
     mode = 'on';
     blocklist = [];
+    effectiveBlocklist = [];
     terminalBlock = true;
     terminalAllowlist = { ports: [], hosts: [] };
     dohBlock = true;
