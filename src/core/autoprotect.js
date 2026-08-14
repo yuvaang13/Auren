@@ -85,4 +85,20 @@ function uniqueToolNames(sessions) {
   return Array.from(new Set((Array.isArray(sessions) ? sessions : []).map((s) => s.tool).filter(Boolean)));
 }
 
-module.exports = { DEFAULT_AUTO_PROTECT, normalizeAutoProtect, shouldEngage, uniqueToolNames };
+// After the user turns protection off — manually, or by an authenticated quit —
+// snooze the tools that engaged it so auto-protect doesn't instantly fight the
+// user back on while those agents are still running. Pure; returns a NEW
+// snoozedUntil map, leaving the caller's untouched. A different (non-snoozed)
+// tool still engages immediately. Returns the previous map (and not a copy) if
+// nothing to snooze, so callers can detect "no change" via identity.
+function snoozeTools(engagedBy, autoProtect, snoozedUntil, now) {
+  const tools = (Array.isArray(engagedBy) ? engagedBy : []).filter(Boolean);
+  if (tools.length === 0) return snoozedUntil || {};
+  const ap = normalizeAutoProtect(autoProtect);
+  const until = (now == null ? Date.now() : Number(now)) + ap.snoozeMs;
+  const next = Object.assign({}, snoozedUntil || {});
+  for (const tool of tools) next[tool] = until;
+  return next;
+}
+
+module.exports = { DEFAULT_AUTO_PROTECT, normalizeAutoProtect, shouldEngage, uniqueToolNames, snoozeTools };

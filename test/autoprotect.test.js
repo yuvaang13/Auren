@@ -279,6 +279,28 @@ test('normalizeAutoProtect validates the new settings keys', () => {
   assert.deepStrictEqual(set.ignore, [{ tool: 'y' }]);
 });
 
+test('snoozeTools snoozes only the engaged tools from a fixed now', () => {
+  const now = 5000;
+  const next = autoprotect.snoozeTools(['codex-cli', 'cursor'], { snoozeMs: 60000 }, { 'opencode': 9999 }, now);
+  assert.strictEqual(next['codex-cli'], now + 60000);
+  assert.strictEqual(next['cursor'], now + 60000);
+  assert.strictEqual(next['opencode'], 9999, 'existing snoozes are preserved');
+});
+
+test('snoozeTools returns the same map (identity) when there is nothing to snooze', () => {
+  const existing = { 'claude-code': 123 };
+  const out = autoprotect.snoozeTools([], { snoozeMs: 60000 }, existing, 5000);
+  assert.strictEqual(out, existing, 'no-op returns the caller\'s map unchanged');
+  const out2 = autoprotect.snoozeTools(null, { snoozeMs: 60000 }, existing, 5000);
+  assert.strictEqual(out2, existing);
+});
+
+test('snoozeTools honors the default snoozeMs when autoProtect is empty', () => {
+  const now = 1000;
+  const next = autoprotect.snoozeTools(['codex-cli'], undefined, {}, now);
+  assert.strictEqual(next['codex-cli'], now + 30 * 60 * 1000);
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

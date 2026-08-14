@@ -339,7 +339,10 @@ verified policy** — never block on behalf of a file Auren can't trust:
   `mode: off` config before exiting; the daemon picks it up within ~1 s,
   restores your normal DNS servers, and stops blocking. The block list is
   preserved, so the next launch starts with protection OFF but the same list
-  ready to re-enable.
+  ready to re-enable. The tools that engaged auto-protect are also snoozed
+  (same rule as a manual turn-off), and in-flight auto-protect polls are
+  blocked during the quit — so a still-running agent can't flip protection
+  right back ON the moment you authenticate your quit.
 - **A crash or force-quit skips the gate but also skips the lift.** SIGKILL,
   the force-quit menu, or killing the app process never runs the quit handler,
   so no `mode: off` is ever written — protection stays ON (deny-all) rather

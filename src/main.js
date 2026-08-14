@@ -106,6 +106,12 @@ let offCooldownUntil = 0;
 // app.quit() can't re-prompt. force-quit / kill paths never set this AND never
 // run liftProtectionOnQuit, so protection stays ON there.
 let forceQuit = false;
+// Set when an authenticated quit starts lifting protection. Blocks auto-protect
+// from re-engaging protection while the app is tearing down — otherwise an
+// in-flight session poll can flip mode back to ON right after the quit, leaving
+// protection on after the user authenticated a quit (and even persisting a
+// mode:on config the daemon then keeps enforcing).
+let quitting = false;
 
 // The canonical, main-process-owned block state.
 let blockState = { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], proxyBlock: true, autofillBlock: true, lock: { state: 'locked', unlockExpiry: 0 } };
@@ -661,9 +667,20 @@ function startPolling() {
 // the quit, so nothing here throws out of the handler.
 function liftProtectionOnQuit() {
   try {
+    quitting = true;
     if (offCooldownTimer) { clearTimeout(offCooldownTimer); offCooldownTimer = null; }
     offCooldownUntil = 0;
     if (blockState.mode === 'on' || blockState.failClosed) {
+      // Mirror the manual turn-off: snooze the tools that engaged auto-protect
+      // so a still-running agent doesn't instantly re-engage protection while
+      // the app is quitting. Without this, an authenticated quit can end with
+      // protection ON again (observed: lift logged, then auto_engaged ~160ms
+      // later and the daemon kept blocking).
+      const engagedBy = autoProtectEngagedBy.slice();
+      if (engagedBy.length > 0) {
+        autoProtectSnoozedUntil = autoprotect.snoozeTools(engagedBy, readSettings().autoProtect, autoProtectSnoozedUntil, Date.now());
+        logActivity(activity.makeEntry('toggle', 'auto_snoozed', null, 'snoozed ' + engagedBy.join(', ') + ' for ' + autoprotect.normalizeAutoProtect(readSettings().autoProtect).snoozeMs + 'ms after quit'));
+      }
       blockState.mode = 'off';
       blockState.failClosed = false;
       blockState.lock = { state: 'locked', unlockExpiry: 0 };
@@ -757,6 +774,10 @@ function startWatchdog() {
 // the mode:set handler so auto-protect shares exactly one implementation.
 // Returns { ok, cancelled, error, mode } — same shape as the IPC response.
 async function engageProtection() {
+  // An authenticated quit is lifting protection: never flip back to ON — even
+  // an auto-protect poll that was already in flight when the quit started must
+  // not re-engage, or the app exits leaving mode:on persisted and enforced.
+  if (quitting) return { ok: false, error: 'quitting', mode: blockState.mode };
   clearOffCooldown();
   if (!dnsController.isDaemonInstalled() || !dnsController.isDaemonCurrent()) {
     daemonBusy = true;
@@ -784,7 +805,9 @@ async function engageAutoProtect(sessions) {
   const tools = autoprotect.uniqueToolNames(sessions);
   const res = await engageProtection();
   if (!res.ok) {
-    logActivity(activity.makeEntry('toggle', 'auto_engage_failed', null, 'auto-protect could not engage (' + tools.join(', ') + ')'));
+    // Quietly drop the engage when a quit is lifting protection — the user
+    // authenticated the quit, so protection must end up OFF.
+    if (!quitting) logActivity(activity.makeEntry('toggle', 'auto_engage_failed', null, 'auto-protect could not engage (' + tools.join(', ') + ')'));
     return;
   }
   autoProtectEngagedBy = tools;
@@ -807,6 +830,7 @@ async function engageAutoProtect(sessions) {
 //   - a session disappeared -> NOTHING: auto-protect never turns protection off.
 async function checkAutoProtect() {
   if (autoProtectBusy) return;
+  if (quitting) return;
   autoProtectBusy = true;
   const fastMode = autoProtectFastMode;
   autoProtectFastMode = false;
@@ -1037,10 +1061,8 @@ ipcMain.handle('mode:set', async (_e, mode) => {
     // auto-engages immediately (shouldEngage filters per tool).
     const engagedBy = autoProtectEngagedBy.slice();
     if (engagedBy.length > 0) {
-      const ap = autoprotect.normalizeAutoProtect(readSettings().autoProtect);
-      const until = Date.now() + ap.snoozeMs;
-      for (const tool of engagedBy) autoProtectSnoozedUntil[tool] = until;
-      logActivity(activity.makeEntry('toggle', 'auto_snoozed', null, 'snoozed ' + engagedBy.join(', ') + ' for ' + ap.snoozeMs + 'ms after manual off'));
+      autoProtectSnoozedUntil = autoprotect.snoozeTools(engagedBy, readSettings().autoProtect, autoProtectSnoozedUntil, Date.now());
+      logActivity(activity.makeEntry('toggle', 'auto_snoozed', null, 'snoozed ' + engagedBy.join(', ') + ' for ' + autoprotect.normalizeAutoProtect(readSettings().autoProtect).snoozeMs + 'ms after manual off'));
     }
     autoProtectLastJson = '';
     autoProtectEngagedBy = [];
