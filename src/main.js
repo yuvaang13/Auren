@@ -842,7 +842,7 @@ async function checkAutoProtect() {
       autoTracker.reset();
       return;
     }
-    const list = procs.list();
+    const list = await procs.list();
     if (!list) return;
     const tools = agentdetect.normalizeTools(ap.tools);
     const base = agentdetect.detectSessions(list, tools, { ignore: ap.ignore });

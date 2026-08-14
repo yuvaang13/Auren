@@ -52,7 +52,9 @@ function runningVirtualization() {
   let blob = '';
   try {
     if (process.platform === 'win32') {
-      const list = procs.list();
+      // listSync, not the async list(): runningVirtualization() is called
+      // synchronously from getState, and the result is cached for 10 s anyway.
+      const list = procs.listSync();
       if (list) blob = list.map((p) => (p.exe || '')).join('\n');
     } else {
       const r = spawnSync('/bin/ps', ['-axo', 'comm='], { encoding: 'utf8', timeout: 5000 });

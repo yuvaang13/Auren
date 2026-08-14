@@ -862,6 +862,23 @@ test('mergeState never throws on null or garbage disk', () => {
   assert.deepStrictEqual(state.mergeState(undefined, 'garbage').proxy, undefined);
 });
 
+const procs = require('../src/platform/procs');
+
+test('procs.list is async and resolves process records (does not block the loop)', async () => {
+  assert.strictEqual(typeof procs.list, 'function');
+  const p = procs.list();
+  assert.ok(p && typeof p.then === 'function', 'list() must return a promise so the daemon never stalls DNS');
+  const list = await p;
+  assert.ok(Array.isArray(list), 'list() resolves to an array of process records');
+  if (list.length > 0) {
+    for (const rec of list.slice(0, 20)) {
+      assert.ok(Number.isInteger(rec.pid) && rec.pid > 0, 'each record has a numeric pid');
+      assert.ok(typeof rec.exe === 'string', 'each record has an executable string');
+      assert.ok(Array.isArray(rec.tokens), 'each record has an argv token array');
+    }
+  }
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);

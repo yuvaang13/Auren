@@ -16,7 +16,7 @@
  */
 
 'use strict';
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const US = String.fromCharCode(0x1f);
 
@@ -33,6 +33,23 @@ function runPS(script) {
   }
 }
 
+// Non-blocking PowerShell: the daemon's app-block scan runs on the same event
+// loop that answers DNS, and a synchronous CIM query would stall every lookup
+// that arrives while it runs. `spawn` keeps the loop free.
+function runPSAsync(script) {
+  return new Promise((resolve) => {
+    const child = spawn(psBin(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (c) => { out += c; });
+    child.stderr.on('data', (c) => { err += c; });
+    child.on('error', () => resolve({ status: -1, stdout: '', stderr: 'spawn failed' }));
+    child.on('close', (code) => resolve({ status: code ?? -1, stdout: out, stderr: err }));
+  });
+}
+
 // Tokenize a command line keeping quoted groups intact ("C:\Program Files\...").
 function tokenize(cmd) {
   const out = [];
@@ -44,9 +61,6 @@ function tokenize(cmd) {
   return out;
 }
 
-// Pure parser, unit-testable without PowerShell. Accepts the current
-// 4-field record PID<US>PPID<US>EXE<US>CMD and tolerates the legacy
-// 3-field PID<US>EXE<US>CMD form (ppid omitted).
 function parseLine(line) {
   const parts = String(line || '').split(US);
   let pid;
@@ -78,19 +92,36 @@ function listCmd() {
     + '"' + '{0}' + US + '{1}' + US + '{2}' + US + '{3}' + '" -f $_.ProcessId, $_.ParentProcessId, $p, $c }';
 }
 
-// [{ pid, ppid, exe, tokens }, ...] or null when the query itself fails.
-function list() {
-  const r = runPS(listCmd());
-  if (r.status !== 0) return null;
-  return String(r.stdout || '')
+function parseList(stdout) {
+  return String(stdout || '')
     .split(/\r?\n/)
     .map(parseLine)
     .filter(Boolean);
 }
 
-function kill(pid) {
-  const r = spawnSync('taskkill', ['/PID', String(pid), '/F'], { encoding: 'utf8' });
-  return { ok: r.status === 0, error: r.status === 0 ? '' : String(r.stderr || '').trim() };
+// Blocking snapshot for cached, occasional callers only — never the daemon's
+// hot path (see runPSAsync note).
+function listSync() {
+  const r = runPS(listCmd());
+  if (r.status !== 0) return null;
+  return parseList(r.stdout);
 }
 
-module.exports = { list, kill, listCmd, parseLine, US };
+// [{ pid, ppid, exe, tokens }, ...] or null when the query itself fails.
+// Never blocks the event loop.
+function list() {
+  return runPSAsync(listCmd()).then((r) => (r.status !== 0 ? null : parseList(r.stdout)));
+}
+
+function kill(pid) {
+  return new Promise((resolve) => {
+    const child = spawn('taskkill', ['/PID', String(pid), '/F'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (c) => { err += c; });
+    child.on('error', (e) => resolve({ ok: false, error: e.message || String(e) }));
+    child.on('close', (code) => resolve({ ok: code === 0, error: code === 0 ? '' : err.trim() }));
+  });
+}
+
+module.exports = { list, listSync, kill, listCmd, parseLine, US };

@@ -142,7 +142,7 @@ const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 22;
+const DAEMON_VERSION = 23;
 
 let mode = 'off';
 let blocklist = [];
@@ -379,14 +379,22 @@ const lastAppKillLog = new Map();
 
 // Kill running copies of blocked apps. Scans the platform process list,
 // matches exact executable path / basename / argv token (core/apps.js — never
-// a substring), and kills matches with SIGKILL/taskkill. Runs on every poll
-// while protection is expected, so a blocked app that is (re)launched is killed
-// within ~1 s and stays stopped. Never touches our own pid or the daemon
+// a substring), and kills matches with SIGKILL/taskkill. Runs while protection
+// is expected, throttled to once per second (a blocked app that is relaunched
+// is killed within ~1 s and stays stopped). The scan is ASYNC — it runs on the
+// same event loop that answers DNS, and a synchronous `ps`/CIM fork on every
+// poll would stall every DNS reply that arrives during it, making all
+// non-blocked sites feel slower. Never touches our own pid or the daemon
 // interpreter (process.execPath); the safety floor below has already stripped
 // any entry pointing at it.
-function enforceAppBlocks() {
+const APP_SCAN_MS = 1000;
+let lastAppScanAt = 0;
+async function enforceAppBlocks() {
   if (!APPS_ENABLED || appBlocklist.length === 0) return;
-  const processList = procs.list();
+  const now = Date.now();
+  if (now - lastAppScanAt < APP_SCAN_MS) return;
+  lastAppScanAt = now;
+  const processList = await procs.list();
   if (!processList) {
     log('error', 'app scan failed');
     return;
@@ -395,10 +403,9 @@ function enforceAppBlocks() {
     selfPid: process.pid,
     protectedExes: [process.execPath]
   });
-  const now = Date.now();
   for (const hit of hits) {
     const key = hit.entry.id;
-    const killRes = procs.kill(hit.pid);
+    const killRes = await procs.kill(hit.pid);
     if (!killRes.ok) {
       log('warn', 'could not kill ' + hit.entry.name + ' (pid ' + hit.pid + '): ' + String(killRes.error || '').trim());
       continue;
@@ -783,7 +790,7 @@ async function reconcileInner() {
 
   // App blocking: kill running copies of blocked apps while protection is
   // expected. Deliberately last — it must never hold up DNS/pf enforcement.
-  if (mode === 'on' || failClosed) enforceAppBlocks();
+  if (mode === 'on' || failClosed) await enforceAppBlocks();
 
   // Browser autofill blocking: while protection is on (and autofill blocking
   // is enabled), force Chromium-family browsers to disable password/address/
