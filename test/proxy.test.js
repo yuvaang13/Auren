@@ -13,7 +13,7 @@ const assert = require('assert');
 const net = require('net');
 
 const { parseSni, normalize } = require('../src/proxy/sni');
-const { buildPac, parseConnectLine, start, stop } = require('../src/proxy/server');
+const { buildPac, parseConnectLine, start, stop, status } = require('../src/proxy/server');
 const pf = require('../src/dns/pf');
 const win = require('../src/platform/proxyops-win');
 
@@ -231,6 +231,22 @@ function buildClientHello(hostname) {
       await stop();
       target.close();
     }
+  });
+
+  await test('proxy stop() resolves even with a live connection (never hangs the daemon)', async () => {
+    // Regression: a tunneled connection stuck in a weird state used to keep
+    // net.Server.close()'s callback pending forever, which wedged the daemon's
+    // reconcile loop and silently stopped all blocking. stop() must resolve.
+    const { port } = await start({ port: 0, blockFn: () => false });
+    const sock = net.connect(port, '127.0.0.1');
+    await new Promise((r, j) => { sock.once('connect', r); sock.once('error', j); });
+    sock.write('CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n');
+    const t0 = Date.now();
+    await stop();
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 5000, 'stop() must resolve promptly even with an open connection (' + elapsed + 'ms)');
+    sock.destroy();
+    assert.strictEqual(status().running, false);
   });
 
   /* -------------------------------- pf rules -------------------------------- */

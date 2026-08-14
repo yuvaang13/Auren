@@ -677,12 +677,21 @@ function liftProtectionOnQuit() {
 // daemon reports its own integrity as bad, enforcement is assumed compromised
 // and the app degrades (fail-closed surfaces refuse; user gets a notification).
 let lastHeartbeat = null;
+// A fresh heartbeat only proves the daemon's liveness interval is running.
+// The reconcile loop that actually applies blocking can wedge at an await
+// while that interval keeps ticking, so trust the loop's own completion
+// timestamp too (reported as `lastReconcile`). The daemon force-resets a stuck
+// loop within RECONCILE_HARD_TIMEOUT_MS (15s), so this threshold is well above
+// that to avoid flagging a self-healing daemon; only a loop that stays dead
+// for a full window degrades and triggers the automatic reinstall below.
+const RECONCILE_STALE_MS = 30 * 1000;
 function checkHeartbeat() {
   const expected = blockState.mode === 'on' || blockState.failClosed;
   let hb = null;
   try { hb = JSON.parse(fs.readFileSync(HEARTBEAT_FILE, 'utf8')); } catch { /* no heartbeat yet */ }
   lastHeartbeat = hb;
-  const fresh = !!hb && typeof hb.ts === 'number' && (Date.now() - hb.ts) < HEARTBEAT_STALE_MS && hb.integrityOk !== false;
+  const loopOk = !hb || typeof hb.lastReconcile !== 'number' || (Date.now() - hb.lastReconcile) < RECONCILE_STALE_MS;
+  const fresh = !!hb && typeof hb.ts === 'number' && (Date.now() - hb.ts) < HEARTBEAT_STALE_MS && hb.integrityOk !== false && loopOk;
   // A port-53 conflict means the daemon is alive but its DNS resolver never
   // bound, so domain blocking silently does nothing — that's degraded even
   // though the heartbeat itself is fresh.
@@ -700,7 +709,7 @@ function checkHeartbeat() {
       logActivity(activity.makeEntry('daemon', 'enforcement_degraded', null, 'port 53 conflict with ' + who));
       notifyDegraded('Auren\u2019s DNS resolver could not start: ' + who + ' is already using port 53. Domain blocking is off until that process is stopped and protection is toggled; nothing gated by Auren will be allowed through in the meantime.');
     } else {
-      logActivity(activity.makeEntry('daemon', 'enforcement_degraded'));
+      logActivity(activity.makeEntry('daemon', 'enforcement_degraded', null, !loopOk ? 'daemon reconcile loop stopped responding' : null));
       notifyDegraded('Auren\u2019s background service stopped responding. Protection is degraded until it recovers; nothing gated by Auren will be allowed through in the meantime.');
     }
   } else if (!next && was) {

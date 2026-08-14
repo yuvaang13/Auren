@@ -195,6 +195,7 @@ async function daemonTest() {
       assert.strictEqual(hb.integrityOk, true);
       assert.strictEqual(hb.pid, child.pid);
       assert.strictEqual(hb.pf, false, 'pf must stay off when AUREN_PF_ENABLED=0');
+      assert.ok(typeof hb.lastReconcile === 'number' && Date.now() - hb.lastReconcile < 5000, 'reconcile loop must be completing (lastReconcile fresh)');
     });
 
     if (process.platform === 'darwin') {

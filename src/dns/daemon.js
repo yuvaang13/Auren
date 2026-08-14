@@ -130,12 +130,18 @@ const POLL_MS = 200;
 // restores it) when the outside world drifted — a new Wi-Fi network, a NIC
 // that changed, a takeover that failed — independent of config changes.
 const NETWORK_SWEEP_MS = 2000;
+// Hard timeout for one reconcile iteration. If a run hangs at an await (e.g.
+// a proxy stop waiting on a socket that won't die) past this deadline, the
+// loop is force-reset so the next tick retries instead of silently never
+// reconciling again — which would leave blocking dead while the heartbeat
+// keeps looking healthy.
+const RECONCILE_HARD_TIMEOUT_MS = 15000;
 const LOG_THROTTLE_MS = 5000;
 const HEARTBEAT_MS = 2000;
 
 // Keep in sync with dns-controller.js DAEMON_VERSION. Surfaced in the
 // heartbeat so the desktop app can tell a current daemon from a stale one.
-const DAEMON_VERSION = 18;
+const DAEMON_VERSION = 19;
 
 let mode = 'off';
 let blocklist = [];
@@ -144,6 +150,10 @@ let resolver = null;
 let upstreamApplied = false;
 let state = { services: {}, applied: false };
 let reconciling = false;
+let reconcileIteration = 0;
+let lastReconcileStartAt = Date.now();
+let lastReconcileDoneAt = Date.now();
+let reconcileStuckReported = false;
 let lastCfgMtime = null;
 let lastFailClosed = false;
 let lastNetworkRun = 0;
@@ -222,7 +232,7 @@ function loadIntegrityKey() {
 // unprivileged app must be able to read it. It contains no secrets.
 function writeHeartbeat() {
   if (!HEARTBEAT) return;
-  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, version: DAEMON_VERSION, mode, failClosed, pf: pfActive, proxy: proxyActive, proxyPort: proxyActive ? proxyPort : null, dnsConflict, integrityOk: !failClosed }) + '\n';
+  const body = JSON.stringify({ ts: Date.now(), pid: process.pid, version: DAEMON_VERSION, mode, failClosed, pf: pfActive, proxy: proxyActive, proxyPort: proxyActive ? proxyPort : null, dnsConflict, integrityOk: !failClosed, lastReconcile: lastReconcileDoneAt }) + '\n';
   try { fs.writeFileSync(HEARTBEAT, body, { mode: 0o644 }); } catch (err) { log('error', 'heartbeat write failed: ' + err.message); }
 }
 
@@ -403,13 +413,35 @@ let resolverDownReported = false;
 // overlap: setInterval fires on a fixed cadence regardless of how long the
 // previous run took, and a slow subprocess iteration (networksetup, scutil,
 // PowerShell, pfctl) must not overlap the next one or subprocesses pile up.
+//
+// A run that hangs at an await would otherwise wedge the loop forever:
+// `reconciling` stays true, every subsequent call no-ops, and blocking stops
+// silently while the heartbeat interval (independent of this loop) keeps
+// writing fresh liveness. So if a run is still in flight past the hard
+// timeout, the flag is force-reset and the next tick starts a fresh iteration
+// — the stuck run is abandoned, and its late finally() is fenced off by the
+// iteration counter so it can't clear a newer run's flag.
 async function reconcile() {
-  if (reconciling) return;
+  const myIter = ++reconcileIteration;
+  if (reconciling) {
+    const stuckMs = Date.now() - lastReconcileStartAt;
+    if (!reconcileStuckReported && stuckMs >= RECONCILE_HARD_TIMEOUT_MS) {
+      reconcileStuckReported = true;
+      log('error', 'reconcile iteration stuck for ' + stuckMs + 'ms — force-resetting the loop so blocking resumes');
+    }
+    if (stuckMs >= RECONCILE_HARD_TIMEOUT_MS) reconciling = false;
+    return;
+  }
   reconciling = true;
+  lastReconcileStartAt = Date.now();
   try {
     await reconcileInner();
+    reconcileStuckReported = false;
+    if (reconcileIteration === myIter) lastReconcileDoneAt = Date.now();
+  } catch (err) {
+    log('error', 'reconcile iteration failed: ' + (err && (err.stack || err.message) || err));
   } finally {
-    reconciling = false;
+    if (reconcileIteration === myIter) reconciling = false;
   }
 }
 

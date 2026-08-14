@@ -26,7 +26,7 @@ const DAEMON_LIB = '/usr/local/lib/auren';
 // app compares the installed daemon's version against this and re-runs the
 // installer when they disagree, so a running launchd job never silently keeps
 // old behavior after an app update. Keep in sync with daemon.js DAEMON_VERSION.
-const DAEMON_VERSION = 18;
+const DAEMON_VERSION = 19;
 
 function isDaemonInstalled() {
   return fs.existsSync(PLIST);

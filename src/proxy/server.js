@@ -220,10 +220,20 @@ function stop() {
     const s = server;
     server = null;
     info = { running: false, port: null };
-    if (typeof s.closeAllConnections === 'function') {
-      try { s.closeAllConnections(); } catch { /* ignore */ }
-    }
-    s.close(() => resolve());
+    let finished = false;
+    const finish = () => { if (!finished) { finished = true; resolve(); } };
+    const forceClose = () => {
+      try { if (typeof s.closeAllConnections === 'function') s.closeAllConnections(); } catch { /* ignore */ }
+    };
+    forceClose();
+    s.close(finish);
+    // A tunneled connection stuck in a weird state (half-open TCP, a client
+    // mid-handshake, an aborted pipe) can keep net.Server.close()'s callback
+    // pending forever. The daemon's reconcile loop awaits this — an unwedged
+    // stop is the whole point, so force-destroy stragglers after a short grace
+    // period and resolve regardless. The old sockets are orphaned, never the
+    // reconcile loop.
+    setTimeout(() => { forceClose(); finish(); }, 1000);
   });
 }
 
