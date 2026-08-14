@@ -38,6 +38,22 @@ function test(name, fn) {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+// Poll the daemon's heartbeat until `pred` holds (or a deadline passes). The
+// daemon writes its heartbeat at the end of each reconcile iteration plus on a
+// fixed interval; on slow/loaded CI runners (Windows especially) the first
+// reconcile — including a PowerShell port-owner probe — can take a couple of
+// seconds, so a single fixed sleep was flaky. Returns the last heartbeat read.
+async function waitForHb(hbFile, pred, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 20000);
+  let hb = null;
+  while (Date.now() < deadline) {
+    try { hb = JSON.parse(fs.readFileSync(hbFile, 'utf8')); } catch { hb = null; }
+    if (hb && pred(hb)) return hb;
+    await sleep(250);
+  }
+  return hb;
+}
+
 function buildQuery(id, name) {
   const qname = dnsMsg.encodeName(name);
   const buf = Buffer.alloc(12 + qname.length + 4);
@@ -400,9 +416,8 @@ async function portConflictTest() {
   });
 
   try {
-    await sleep(1800);
-    const hb = JSON.parse(fs.readFileSync(hbFile, 'utf8'));
-    assert.ok(hb.dnsConflict, 'heartbeat must report a DNS port conflict');
+    const hb = await waitForHb(hbFile, (h) => !!h.dnsConflict);
+    assert.ok(hb && hb.dnsConflict, 'heartbeat must report a DNS port conflict');
     assert.strictEqual(hb.dnsConflict.port, port);
     assert.ok(hb.dnsConflict.pid, 'conflict must identify the owning pid');
     assert.ok(hb.dnsConflict.name, 'conflict must name the owning process');
@@ -461,9 +476,8 @@ async function proxyFallbackTest() {
   });
 
   try {
-    await sleep(2000);
-    const hb = JSON.parse(fs.readFileSync(hbFile, 'utf8'));
-    assert.strictEqual(hb.proxy, true, 'proxy must be active');
+    const hb = await waitForHb(hbFile, (h) => h.proxy === true && h.proxyPort === proxyPort + 1);
+    assert.ok(hb && hb.proxy === true, 'proxy must be active');
     assert.strictEqual(hb.proxyPort, proxyPort + 1, 'proxy must fall back to the next free port');
 
     // The PAC the daemon points the system proxy at is served on that port and
