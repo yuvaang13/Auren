@@ -102,6 +102,16 @@ let shieldSecureInput = false;
 const OFF_COOLDOWN_MS = 5 * 1000;
 let offCooldownTimer = null;
 let offCooldownUntil = 0;
+
+// Persisted flag to prevent repeated daemon refresh prompts across app launches.
+// Stored in user data so it survives process restarts. Updated after first attempt.
+const DAEMON_REFRESH_FLAG = path.join(USER_DATA, '.daemon-refresh-flag');
+function hasDaemonRefreshAttempted() {
+  try { return fs.existsSync(DAEMON_REFRESH_FLAG); } catch { return false; }
+}
+function markDaemonRefreshAttempted() {
+  try { fs.writeFileSync(DAEMON_REFRESH_FLAG, ''); } catch { /* best-effort */ }
+}
 // Set once a graceful quit has cleared the protection gate, so the follow-up
 // app.quit() can't re-prompt. force-quit / kill paths never set this AND never
 // run liftProtectionOnQuit, so protection stays ON there.
@@ -187,16 +197,15 @@ function installDaemon() {
 
 // A launchd job from an older build (before the heartbeat + signed-config
 // contract) stays running forever and never writes heartbeats, which the
-// watchdog would read as "service down" and degrade. Detect that and re-run
-// the installer — with an OS-native admin prompt — so the running daemon
+// watchdog would read as "service down" and degrade. Detect that and re-run the installer
+// — with an OS-native admin prompt — so the running daemon
 // matches this build. At startup we only prompt unprompted when protection is
 // expected to be enforced; turning protection ON always re-verifies.
-let daemonRefreshAttempted = false;
 async function refreshDaemonIfStale() {
-  if (daemonRefreshAttempted) return true;
+  if (hasDaemonRefreshAttempted()) return true;
   if (!dnsController.isDaemonInstalled() || dnsController.isDaemonCurrent()) return true;
   if (blockState.mode !== 'on' && !blockState.failClosed) return true;
-  daemonRefreshAttempted = true;
+  markDaemonRefreshAttempted();
   daemonBusy = true;
   try {
     const res = await installDaemon();
@@ -747,12 +756,23 @@ function checkHeartbeat() {
 // fires again. When the watchdog is actually degraded with protection expected,
 // try ONE automatic reinstall (bounded — no prompt loops). The OS-native prompt
 // is the same one the user already accepted when they turned protection on.
-let daemonRecoveryAttempted = false;
+// Persisted flag to prevent recovery loops across app launches.
+const DAEMON_RECOVERY_FLAG = path.join(USER_DATA, '.daemon-recovery-flag');
+function hasDaemonRecoveryAttempted() {
+  try { return fs.existsSync(DAEMON_RECOVERY_FLAG); } catch { return false; }
+}
+function markDaemonRecoveryAttempted() {
+  try { fs.writeFileSync(DAEMON_RECOVERY_FLAG, ''); } catch { /* best-effort */ }
+}
+// label "installed" but nothing running, so the normal mode:set reinstall never
+// fires again. When the watchdog is actually degraded with protection expected,
+// try ONE automatic reinstall (bounded — no prompt loops). The OS-native prompt
+// is the same one the user already accepted when they turned protection on.
 function maybeRecoverDaemon() {
-  if (daemonRecoveryAttempted || !degraded) return;
+  if (hasDaemonRecoveryAttempted() || !degraded) return;
   if (blockState.mode !== 'on' && !blockState.failClosed) return;
   if (daemonBusy || (Date.now() - STARTED_AT) < WATCHDOG_GRACE_MS) return;
-  daemonRecoveryAttempted = true;
+  markDaemonRecoveryAttempted();
   logActivity(activity.makeEntry('daemon', 'recovery_attempted', null, 'service stopped responding; reinstalling the background service'));
   installDaemon().then((res) => {
     if (res.ok) {
