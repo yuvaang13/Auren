@@ -387,7 +387,7 @@ const lastAppKillLog = new Map();
 // non-blocked sites feel slower. Never touches our own pid or the daemon
 // interpreter (process.execPath); the safety floor below has already stripped
 // any entry pointing at it.
-const APP_SCAN_MS = 1000;
+const APP_SCAN_MS = 200;
 let lastAppScanAt = 0;
 async function enforceAppBlocks() {
   if (!APPS_ENABLED || appBlocklist.length === 0) return;
