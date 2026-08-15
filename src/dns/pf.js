@@ -262,16 +262,40 @@ function status() {
   return { enabled: r.status === 0 && /^Status:\s*Enabled/m.test((r.stdout || '') + (r.stderr || '')) };
 }
 
+// Cache the rules file content and its mtime so we don't re-read it on every
+// reconcile poll when the rules haven't changed. The daemon only writes the
+// rules file when they actually change (gated by rulesJson !== lastAnchorJson),
+// so this avoids synchronous fs.readFileSync on every 200ms poll.
+let cachedRulesContent = null;
+let cachedRulesMtime = null;
+
 // Load (or reload) the auren anchor from a rules file. Idempotent; safe to run
 // on every reconcile — pfctl is cheap and re-inserting the same anchor is a
 // no-op apart from a brief rule flush.
 function applyAnchor(rulesFile) {
-  try {
-    const content = fs.readFileSync(rulesFile, 'utf8');
-    if (!content || content.trim().length === 0) return { ok: false, error: 'empty rules file' };
-  } catch (err) {
-    return { ok: false, error: 'rules file unreadable: ' + err.message };
+  let content = cachedRulesContent;
+  if (content === null) {
+    try {
+      content = fs.readFileSync(rulesFile, 'utf8');
+      cachedRulesContent = content;
+      cachedRulesMtime = fs.statSync(rulesFile).mtimeMs;
+    } catch (err) {
+      return { ok: false, error: 'rules file unreadable: ' + err.message };
+    }
+  } else {
+    // Verify the file mtime hasn't changed; if it has, re-read it.
+    try {
+      const mtime = fs.statSync(rulesFile).mtimeMs;
+      if (mtime !== cachedRulesMtime) {
+        content = fs.readFileSync(rulesFile, 'utf8');
+        cachedRulesContent = content;
+        cachedRulesMtime = mtime;
+      }
+    } catch (err) {
+      return { ok: false, error: 'rules file unreadable: ' + err.message };
+    }
   }
+  if (!content || content.trim().length === 0) return { ok: false, error: 'empty rules file' };
   // `pfctl -e` only when pf is not already enabled. On macOS an already-running
   // pf makes `-e` exit non-zero with "pf already enabled" (plus ALTQ warnings
   // on Apple Silicon), which used to fail the whole anchor load forever — the
