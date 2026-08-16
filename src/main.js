@@ -34,6 +34,37 @@
  */
 
 'use strict';
+
+/* ------------------------- dead-pipe console guard ------------------------ */
+
+// When the parent terminal is closed (or the launcher process dies) after the
+// app starts, the inherited stdout/stderr fds go stale and ANY console write
+// throws "write EIO". That includes writes Electron makes internally — e.g.
+// WebFrameMain.send logs a failed frame send via console.error — and the
+// resulting uncaught exception kills the whole app with an "Uncaught
+// Exception" dialog even though nothing is wrong. The guards below make a
+// broken pipe non-fatal: console calls swallow the error, stream 'error'
+// events are ignored, and uncaughtException is a last-resort net for the async
+// write path. Anything that is NOT a broken pipe still crashes as before.
+const BROKEN_STREAM_CODES = new Set(['EIO', 'EPIPE', 'EBADF']);
+const isBrokenPipeError = (err) => !!(err && BROKEN_STREAM_CODES.has(err.code));
+const guardConsole = (fn) => function guardedConsole() {
+  try { return fn.apply(this, arguments); } catch (err) {
+    if (isBrokenPipeError(err)) return undefined;
+    throw err;
+  }
+};
+for (const method of ['log', 'info', 'warn', 'error', 'debug']) {
+  if (typeof console[method] === 'function') console[method] = guardConsole(console[method]);
+}
+for (const stream of [process.stdout, process.stderr]) {
+  if (stream) stream.on('error', (err) => { if (!isBrokenPipeError(err)) throw err; });
+}
+process.on('uncaughtException', (err) => {
+  if (isBrokenPipeError(err)) return;
+  throw err;
+});
+
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
