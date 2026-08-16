@@ -723,7 +723,13 @@ function checkHeartbeat() {
   try { hb = JSON.parse(fs.readFileSync(HEARTBEAT_FILE, 'utf8')); } catch { /* no heartbeat yet */ }
   lastHeartbeat = hb;
   const loopOk = !hb || typeof hb.lastReconcile !== 'number' || (Date.now() - hb.lastReconcile) < RECONCILE_STALE_MS;
-  const fresh = !!hb && typeof hb.ts === 'number' && (Date.now() - hb.ts) < HEARTBEAT_STALE_MS && hb.integrityOk !== false && loopOk;
+  // Only require integrityOk when the heartbeat is stale — if it's fresh
+  // (within HEARTBEAT_STALE_MS) the daemon already keeps the last verified
+  // policy, so a transient integrity failure shouldn't cause immediate
+  // degradation. This prevents permanent degradation from a key file that
+  // may be momentarily unreadable at daemon startup.
+  const integrityFresh = !hb || (Date.now() - hb.ts) >= HEARTBEAT_STALE_MS || hb.integrityOk !== false;
+  const fresh = !!hb && typeof hb.ts === 'number' && (Date.now() - hb.ts) < HEARTBEAT_STALE_MS && integrityFresh && loopOk;
   // A port-53 conflict means the daemon is alive but its DNS resolver never
   // bound, so domain blocking silently does nothing — that's degraded even
   // though the heartbeat itself is fresh.
