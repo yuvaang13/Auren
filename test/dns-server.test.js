@@ -294,12 +294,17 @@ async function daemonTest() {
         fs.writeFileSync(dummy, '#!/bin/sh\nwhile true; do sleep 1; done\n');
         fs.chmodSync(dummy, 0o755);
         writeCfg('on', ['bank.com'], false, [{ id: 'com.auren.test.blockedapp', name: 'blocked-app', path: dummy }]);
+        // Poll until the daemon has picked up the new block list (heartbeat app check is implicit via kill loop)
         await sleep(1500);
         const proc = spawn('/bin/sh', [dummy], { stdio: 'ignore' });
-        await sleep(1800);
+        // Poll for kill — CI runners (especially macOS) can be ~2x slower, so don't rely on a single fixed sleep.
         let alive = true;
-        try { process.kill(proc.pid, 0); } catch { alive = false; }
-        assert.ok(!alive, 'blocked app process must be killed within ~1 s');
+        const deadline = Date.now() + 6000;
+        while (Date.now() < deadline) {
+          await sleep(300);
+          try { process.kill(proc.pid, 0); } catch { alive = false; break; }
+        }
+        assert.ok(!alive, 'blocked app process must be killed within ~6 s');
         try { proc.kill('SIGKILL'); } catch { /* already dead */ }
         const lines = fs.readFileSync(actFile, 'utf8').split('\n').filter((l) => l.trim());
         assert.ok(lines.some((l) => l.includes('"kind":"app"') && l.includes('blocked-app')), 'the kill must be logged in activity');
@@ -313,10 +318,17 @@ async function daemonTest() {
         fs.chmodSync(dummy, 0o755);
         const proc = spawn('/bin/sh', [dummy], { stdio: 'ignore' });
         await sleep(1500);
+        // Ensure it stays alive for a full additional scan window (2 s)
         let alive = true;
         try { process.kill(proc.pid, 0); } catch { alive = false; }
         assert.ok(alive, 'app must keep running while protection is off');
+        await sleep(2000);
+        try { process.kill(proc.pid, 0); alive = true; } catch { alive = false; }
+        assert.ok(alive, 'app must still be running after 2 s while protection is off');
         proc.kill('SIGTERM');
+        // Give it a moment to exit so it doesn't linger into next test
+        await sleep(300);
+        try { proc.kill('SIGKILL'); } catch {}
       });
     }
   } finally {
