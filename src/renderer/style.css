@@ -1,46 +1,46 @@
-/* auren — minimal, premium UI. Inter, flat surfaces, restrained accent. */
+/* auren — minimal, premium UI. Telegraf, flat surfaces, restrained accent. */
 
 @font-face {
-  font-family: "Inter";
+  font-family: "Telegraf";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("fonts/inter-latin-400-normal.woff2") format("woff2");
+  src: url("fonts/telegraf-latin-400-normal.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Inter";
+  font-family: "Telegraf";
   font-style: normal;
   font-weight: 500;
   font-display: swap;
-  src: url("fonts/inter-latin-500-normal.woff2") format("woff2");
+  src: url("fonts/telegraf-latin-500-normal.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Inter";
+  font-family: "Telegraf";
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url("fonts/inter-latin-600-normal.woff2") format("woff2");
+  src: url("fonts/telegraf-latin-600-normal.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Inter";
+  font-family: "Telegraf";
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url("fonts/inter-latin-700-normal.woff2") format("woff2");
+  src: url("fonts/telegraf-latin-700-normal.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Inter";
+  font-family: "Telegraf";
   font-style: normal;
   font-weight: 800;
   font-display: swap;
-  src: url("fonts/inter-latin-800-normal.woff2") format("woff2");
+  src: url("fonts/telegraf-latin-800-normal.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Inter";
+  font-family: "Telegraf";
   font-style: normal;
   font-weight: 900;
   font-display: swap;
-  src: url("fonts/inter-latin-900-normal.woff2") format("woff2");
+  src: url("fonts/telegraf-latin-900-normal.woff2") format("woff2");
 }
 
 :root {
@@ -63,8 +63,8 @@
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 20px 50px -30px rgba(0, 0, 0, 0.9);
   --radius: 16px;
   --radius-sm: 11px;
-  --font: "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
-  --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font: "Telegraf", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --mono: "Telegraf", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 * { box-sizing: border-box; }
