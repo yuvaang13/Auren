@@ -107,10 +107,22 @@ app.setPath('userData', USER_DATA);
 
 // Dev builds run the generic Electron binary, so give the Dock the auren
 // identity at runtime: custom icon + lowercase name. Packaged builds inherit
-// both from the app bundle instead.
-const ICON_PATH = path.join(__dirname, '..', 'build', 'icon.png');
+// both from the app bundle instead. Use auren.icns as the source of truth.
+function resolveAppIcon() {
+  const candidates = [
+    path.join(__dirname, '..', 'auren.icns'),
+    path.join(__dirname, '..', 'build', 'icon.icns'),
+    path.join(__dirname, '..', 'build', 'icon.png'),
+  ];
+  for (const p of candidates) { try { if (fs.existsSync(p)) return p; } catch {} }
+  return candidates[candidates.length - 1];
+}
+const ICON_PATH = resolveAppIcon();
 if (process.platform === 'darwin') {
-  try { app.dock.setIcon(nativeImage.createFromPath(ICON_PATH)); } catch { /* best-effort */ }
+  try {
+    const dockImg = nativeImage.createFromPath(ICON_PATH);
+    if (!dockImg.isEmpty()) app.dock.setIcon(dockImg);
+  } catch { /* best-effort */ }
 }
 
 // Auren ships a dark UI; keep native chrome and dialogs consistent with it.

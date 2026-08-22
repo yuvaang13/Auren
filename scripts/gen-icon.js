@@ -6,6 +6,14 @@ const { execSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const pngPath = path.join(root, 'build', 'icon.png');
 const icnsPath = path.join(root, 'build', 'icon.icns');
+const aurenIcns = path.join(root, 'auren.icns');
+
+// If the canonical auren.icns exists at the repo root, use it directly — it is the source of truth for the Dock/app icon.
+if (fs.existsSync(aurenIcns)) {
+  try { fs.copyFileSync(aurenIcns, icnsPath); } catch {}
+  console.log('ICNS copied from auren.icns to build/icon.icns');
+  process.exit(0);
+}
 
 try {
   fs.accessSync(pngPath);
