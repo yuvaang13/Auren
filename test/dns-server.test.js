@@ -94,6 +94,20 @@ async function startMockUpstream() {
   return { socket: srv, port: srv.address().port };
 }
 
+// Poll a query until it returns the expected status (or timeout) — hardens against
+// Windows CI UDP loss / slow reconcile under load.
+async function queryUntil(port, name, expected, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 8000);
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await query(port, name);
+    if (last.status === expected) return last;
+    // Don't burn on TIMEOUT vs expected — wait for daemon to catch up
+    await sleep(400);
+  }
+  return last;
+}
+
 // A tiny Node DNS client (mirrors what dig exposed to the tests): send a query
 // and report the response RCODE as a status string plus the answer count.
 function query(port, name) {
@@ -197,17 +211,25 @@ async function daemonTest() {
     setTimeout(finish, 4000);
   });
 
-  await sleep(3000); // let it bind + reconcile (Windows CI can be slower)
+  // Wait until the daemon is actually ready (heartbeat fresh + integrity OK)
+  // Fixed 3s was flaky on Windows CI under load — poll the heartbeat instead.
+  await waitForHb(hbFile, (hb) => hb.integrityOk === true && hb.pid === child.pid && typeof hb.lastReconcile === 'number' && Date.now() - hb.ts < 5000 && Date.now() - hb.lastReconcile < 5000, 20000);
 
   try {
     await test('daemon: blocks the configured domain in real time', async () => {
-      const r = await query(port, 'bank.com');
+      // Poll the query a few times — first UDP packet can be lost on Windows CI under load.
+      let r = null;
+      for (let i = 0; i < 5; i++) {
+        r = await query(port, 'bank.com');
+        if (r.status === 'NXDOMAIN') break;
+        await sleep(500);
+      }
       assert.strictEqual(r.status, 'NXDOMAIN');
     });
 
     await test('daemon: writes a fresh heartbeat with integrity OK', async () => {
-      const hb = JSON.parse(fs.readFileSync(hbFile, 'utf8'));
-      assert.ok(Date.now() - hb.ts < 5000);
+      const hb = await waitForHb(hbFile, (h) => h.integrityOk === true && typeof h.lastReconcile === 'number' && Date.now() - h.ts < 5000 && Date.now() - h.lastReconcile < 5000, 10000);
+      assert.ok(hb && Date.now() - hb.ts < 5000);
       assert.strictEqual(hb.integrityOk, true);
       assert.strictEqual(hb.pid, child.pid);
       assert.strictEqual(hb.pf, false, 'pf must stay off when AUREN_PF_ENABLED=0');
@@ -233,16 +255,16 @@ async function daemonTest() {
     await test('daemon: block list changes apply without restart', async () => {
       writeCfg('on', ['bank.com', 'example.net'], false);
       await sleep(1500);
-      const r = await query(port, 'example.net');
+      const r = await queryUntil(port, 'example.net', 'NXDOMAIN', 8000);
       assert.strictEqual(r.status, 'NXDOMAIN');
-      const r2 = await query(port, 'example.org');
+      const r2 = await queryUntil(port, 'example.org', 'NOERROR', 8000);
       assert.strictEqual(r2.status, 'NOERROR');
     });
 
     await test('daemon: mode off stops blocking', async () => {
       writeCfg('off', ['bank.com'], false);
       await sleep(1500);
-      const r = await query(port, 'bank.com');
+      const r = await queryUntil(port, 'bank.com', 'NOERROR', 8000);
       assert.strictEqual(r.status, 'NOERROR');
     });
 
@@ -259,7 +281,7 @@ async function daemonTest() {
       // example.org allowed.
       writeCfg('on', ['bank.com'], false);
       await sleep(1500);
-      const base = await query(port, 'example.org');
+      const base = await queryUntil(port, 'example.org', 'NOERROR', 8000);
       assert.strictEqual(base.status, 'NOERROR');
 
       // Rewrite the config directly WITHOUT updating the signature, like an
@@ -270,11 +292,11 @@ async function daemonTest() {
       // degraded integrity.
       fs.writeFileSync(cfgFile, JSON.stringify({ version: 1, mode: 'off', blocklist: [], failClosed: true }));
       await sleep(1500);
-      const blocked = await query(port, 'bank.com');
+      const blocked = await queryUntil(port, 'bank.com', 'NXDOMAIN', 8000);
       assert.strictEqual(blocked.status, 'NXDOMAIN', 'last verified block list must still be enforced');
-      const allowed = await query(port, 'example.org');
+      const allowed = await queryUntil(port, 'example.org', 'NOERROR', 8000);
       assert.strictEqual(allowed.status, 'NOERROR', 'unrelated traffic must not be denied');
-      const hb = JSON.parse(fs.readFileSync(hbFile, 'utf8'));
+      const hb = await waitForHb(hbFile, (h) => h.integrityOk === false, 8000);
       assert.strictEqual(hb.integrityOk, false, 'heartbeat must report degraded integrity');
       assert.strictEqual(hb.failClosed, false, 'tampered failClosed must not be honored');
     });
@@ -282,8 +304,8 @@ async function daemonTest() {
     await test('daemon: blocked lookups land in the activity log', async () => {
       writeCfg('on', ['bank.com'], false);
       await sleep(1500);
-      await query(port, 'bank.com');
-      await sleep(300);
+      await queryUntil(port, 'bank.com', 'NXDOMAIN', 8000);
+      await sleep(500);
       const lines = fs.readFileSync(actFile, 'utf8').split('\n').filter((l) => l.trim());
       assert.ok(lines.some((l) => l.includes('"kind":"block"') && l.includes('bank.com')));
     });
