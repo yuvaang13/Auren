@@ -22,6 +22,17 @@ contextBridge.exposeInMainWorld('auren', {
   setAutoProtect: (patch) => ipcRenderer.invoke('settings:set-auto-protect', patch),
   confirmAutoProtect: () => ipcRenderer.invoke('autoprotect:confirm'),
   ignoreAgentTool: (tool) => ipcRenderer.invoke('settings:ignore-agent-tool', tool),
+  // — File System Guard & Virtual Isolation —
+  pickWorkspace: () => ipcRenderer.invoke('fsguard:pick'),
+  addWorkspace: (p) => ipcRenderer.invoke('fsguard:add', p),
+  removeWorkspace: (id) => ipcRenderer.invoke('fsguard:remove', id),
+  checkFsAccess: (payload) => ipcRenderer.invoke('fsguard:check', payload),
+  getExclusions: () => ipcRenderer.invoke('fsguard:exclusions'),
+  canonicalize: (p) => ipcRenderer.invoke('path:canonicalize', p),
+  // — Sandbox Monitor —
+  getSandbox: () => ipcRenderer.invoke('sandbox:get'),
+  getSandboxEvents: (limit) => ipcRenderer.invoke('sandbox:events', limit),
+  clearSandboxEvents: () => ipcRenderer.invoke('sandbox:clear'),
   onChange: (cb) => ipcRenderer.on('state', (_event, state) => cb(state)),
   onAutoProtectPrompt: (cb) => ipcRenderer.on('autoprotect:prompt', (_event, tools) => cb(tools))
 });

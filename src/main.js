@@ -89,6 +89,10 @@ const { requireAuthentication, requireNativeAuth } = require('./platform/biometr
 const procs = require('./platform/procs');
 const shield = require('./core/shield');
 const paths = require('./platform/paths');
+const fsguard = require('./core/fsguard');
+const sandbox = require('./platform/sandbox');
+const { canonicalize } = require('./core/path-normalize');
+const { dialog } = require('electron');
 
 const USER_DATA = paths.userDataDir();
 const SYSTEM_SPOOL = paths.systemSpoolDir();
@@ -167,7 +171,7 @@ let forceQuit = false;
 let quitting = false;
 
 // The canonical, main-process-owned block state.
-let blockState = { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], proxyBlock: true, autofillBlock: true, lock: { state: 'locked', unlockExpiry: 0 } };
+let blockState = { version: 1, mode: 'off', blocklist: [], appBlocklist: [], failClosed: false, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], proxyBlock: true, autofillBlock: true, fsGuard: fsguard.createDefaultPolicy(), lock: { state: 'locked', unlockExpiry: 0 } };
 let storeIntegrityKey = null;
 
 // True when enforcement can't be trusted (daemon silent, tampered/corrupt
@@ -405,6 +409,10 @@ async function startAgentBridge() {
         }),
         checkAction: (payload) => agentgate.inspectAction(payload, agentGateCtx()),
         checkCommand: (cmd) => agentgate.inspectCommand(cmd, agentGateCtx()),
+        checkFs: (payload) => {
+          const p = payload && payload.path ? payload.path : String(payload || '');
+          return fsguard.isAccessAllowed(p, blockState.fsGuard);
+        },
         isBlocked: (domain) => agentgate.isBlocked(domain, agentGateCtx())
       }
     });
@@ -499,6 +507,7 @@ function normalizeLoadedState(loaded) {
     dohHosts: Array.isArray(loaded.dohHosts) ? Array.from(new Set(loaded.dohHosts.map((h) => String(h).trim()).filter(Boolean))) : [],
     proxyBlock: loaded.proxyBlock !== false,
     autofillBlock: loaded.autofillBlock !== false,
+    fsGuard: fsguard.normalizePolicy(loaded.fsGuard),
     lock: { state: 'locked', unlockExpiry: 0 }
   };
   if (loaded.lock && loaded.lock.unlockExpiry && loaded.lock.unlockExpiry > Date.now()) {
@@ -543,6 +552,7 @@ function persist() {
     dohHosts,
     proxyBlock,
     autofillBlock,
+    fsGuard: fsguard.normalizePolicy(blockState.fsGuard),
     lock: blockState.lock
   });
   config.writeSignedConfig(CONFIG_FILE, {
@@ -556,7 +566,8 @@ function persist() {
     dohBlock,
     dohHosts,
     proxyBlock,
-    autofillBlock
+    autofillBlock,
+    fsGuard: fsguard.normalizePolicy(blockState.fsGuard)
   }, storeIntegrityKey);
 }
 
@@ -584,12 +595,12 @@ function ensureFiles() {
 
   if (loaded) {
     blockState = normalizeLoadedState(loaded);
-  } else if (store.storeFileExists(USER_DATA)) {
+    } else if (store.storeFileExists(USER_DATA)) {
     // The store exists but refuses to decrypt: tampered or corrupt. Fail closed
     // — we can't trust whatever was in there. Preserve the corrupt file for
     // inspection, then start deny-all (mode ON + failClosed).
     try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.corrupt'); } catch { /* best-effort */ }
-    blockState = { version: 1, mode: 'on', blocklist: [], appBlocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], proxyBlock: true, autofillBlock: true, lock: { state: 'locked', unlockExpiry: 0 } };
+    blockState = { version: 1, mode: 'on', blocklist: [], appBlocklist: [], failClosed: true, terminalBlock: true, terminalAllowlist: { ports: [], hosts: [] }, dohBlock: true, dohHosts: [], proxyBlock: true, autofillBlock: true, fsGuard: fsguard.createDefaultPolicy(), lock: { state: 'locked', unlockExpiry: 0 } };
     degraded = true;
     logActivity(activity.makeEntry('daemon', 'integrity_failed', null, 'encrypted store could not be verified: ' + (loadError && loadError.message)));
     notifyDegraded('auren could not verify its encrypted block list and has failed closed. Nothing will be allowed through until you review it.');
@@ -633,6 +644,8 @@ function getState() {
     keystrokeShield: shield.keystrokeShieldActive(blockState),
     agentBridge: bridgeInfo,
     autoProtect: autoProtectState(),
+    fsGuard: fsguard.normalizePolicy(blockState.fsGuard),
+    sandbox: sandbox.getStatus(),
     lock: blockState.lock
   };
 }
@@ -1176,6 +1189,109 @@ ipcMain.handle('settings:ignore-agent-tool', (_e, tool) => {
   logActivity(activity.makeEntry('daemon', 'agent_ignored', null, 'auto-protect will ignore ' + name));
   pushState();
   return { ok: true, autoProtect: next };
+});
+
+/* ----------------------- File System Guard IPC ----------------------- */
+
+// Pick a workspace directory via OS dialog — creates a restricted Virtual Mount Point.
+ipcMain.handle('fsguard:pick', async () => {
+  const win = BrowserWindow.getFocusedWindow() || mainWindow;
+  const res = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'Select workspace directory — Auren will restrict the agent to this folder',
+    buttonLabel: 'Allow this folder'
+  });
+  if (res.canceled || !res.filePaths || !res.filePaths.length) {
+    return { ok: false, cancelled: true };
+  }
+  const picked = res.filePaths[0];
+  const add = fsguard.addMount(blockState.fsGuard, picked);
+  if (!add.ok) return { ok: false, error: add.error };
+  blockState.fsGuard = add.policy;
+  persist();
+  logActivity(activity.makeEntry('daemon', 'fs_mount_added', null, 'workspace mount: ' + add.mount.path));
+  pushState();
+  return { ok: true, mount: add.mount, fsGuard: blockState.fsGuard };
+});
+
+ipcMain.handle('fsguard:add', (_e, dirPath) => {
+  const add = fsguard.addMount(blockState.fsGuard, dirPath);
+  if (!add.ok) return { ok: false, error: add.error };
+  blockState.fsGuard = add.policy;
+  persist();
+  logActivity(activity.makeEntry('daemon', 'fs_mount_added', null, 'workspace mount: ' + add.mount.path));
+  pushState();
+  return { ok: true, mount: add.mount, fsGuard: blockState.fsGuard };
+});
+
+ipcMain.handle('fsguard:remove', (_e, id) => {
+  const rem = fsguard.removeMount(blockState.fsGuard, id);
+  if (!rem.ok) return { ok: false, error: rem.error };
+  blockState.fsGuard = rem.policy;
+  persist();
+  logActivity(activity.makeEntry('daemon', 'fs_mount_removed', null, 'mount removed: ' + id));
+  pushState();
+  return { ok: true, fsGuard: blockState.fsGuard };
+});
+
+// Agent-side FS gate: any agent read/write must call this BEFORE touching disk.
+// Canonicalizes the path, checks forced exclusions, then mount containment.
+// Fail-closed: while degraded or outside mounts => denied. Event is logged to the
+// ephemeral sandbox ring buffer, never to disk.
+ipcMain.handle('fsguard:check', (_e, payload) => {
+  const p = payload && payload.path ? payload.path : String(payload || '');
+  const op = payload && payload.op ? String(payload.op) : 'read';
+  // Degraded => deny everything (fail-closed)
+  if (degraded || blockState.failClosed) {
+    const ev = { kind: 'fs_block', path: p, reason: 'enforcement degraded — default deny', pid: payload && payload.pid };
+    sandbox.pushEvent(ev);
+    logActivity(activity.makeEntry('command', 'blocked', null, 'fs ' + op + ' blocked (degraded): ' + path.basename(p)));
+    pushState();
+    return { allowed: false, reason: 'enforcement degraded', canonical: null };
+  }
+  const res = fsguard.isAccessAllowed(p, blockState.fsGuard);
+  if (!res.allowed) {
+    sandbox.pushEvent({ kind: 'fs_block', path: res.canonical || p, reason: res.reason, pid: payload && payload.pid });
+    // Throttle activity log: only log the first few denials per session to avoid spam
+    logActivity(activity.makeEntry('command', 'blocked', null, 'fs ' + op + ' blocked: ' + res.reason + ' — ' + path.basename(res.canonical || p)));
+    pushState();
+  }
+  return res;
+});
+
+// Return the forced exclusion list for display in the UI (read-only).
+ipcMain.handle('fsguard:exclusions', () => {
+  return {
+    basenames: Array.from(fsguard.FORCED_BASENAMES),
+    extensions: Array.from(fsguard.FORCED_EXTENSIONS),
+    dirSegments: Array.from(fsguard.FORCED_DIR_SEGMENTS),
+    browserFiles: [] // reserved
+  };
+});
+
+// Path normalization diagnostic (for UI testing / agent debugging).
+ipcMain.handle('path:canonicalize', (_e, input) => {
+  return canonicalize(String(input || ''));
+});
+
+/* ----------------------- Sandbox Monitor IPC ----------------------- */
+
+ipcMain.handle('sandbox:get', () => {
+  const s = sandbox.getStatus();
+  // Merge watchdog degraded flag
+  s.degraded = degraded || blockState.failClosed;
+  s.mode = blockState.mode;
+  return s;
+});
+
+ipcMain.handle('sandbox:events', (_e, limit) => {
+  return sandbox.getEvents(limit);
+});
+
+ipcMain.handle('sandbox:clear', () => {
+  sandbox.clearEvents();
+  pushState();
+  return { ok: true };
 });
 
 /* ------------------------------- startup ----------------------------- */

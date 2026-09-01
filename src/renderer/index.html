@@ -10,7 +10,6 @@
 </head>
 <body>
 
-  <!-- ambient premium background -->
   <div class="ambient" aria-hidden="true">
     <div class="orb orb--1"></div>
     <div class="orb orb--2"></div>
@@ -24,10 +23,6 @@
       <linearGradient id="auren-grad" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="#34d399"/>
         <stop offset="1" stop-color="#0f9f6e"/>
-      </linearGradient>
-      <linearGradient id="sheen-grad" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="rgba(255,255,255,0.16)"/>
-        <stop offset="1" stop-color="rgba(255,255,255,0)"/>
       </linearGradient>
     </defs>
   </svg>
@@ -51,15 +46,15 @@
       </div>
       <div class="onboarding-step" id="ob-step-1">
         <h1>Welcome to Auren</h1>
-        <p class="ob-lead">A private guardrail for your AI agents.</p>
-        <p>Auren blocks websites, apps, and OS-level access from anything on this computer — including AI agents — until <em>you</em> unlock it with your fingerprint or passcode.</p>
-        <p>It works below every browser and app, at the network level. No extension to skip. No window to evade.</p>
+        <p class="ob-lead">A private, local-only guardrail for your AI agents.</p>
+        <p>Auren blocks websites, apps, and file access — at the OS level — until <em>you</em> unlock it with your fingerprint or passcode. 100% on-device. Zero telemetry.</p>
+        <p>Four guardrails: Network, Apps, File Isolation, and Sandbox Monitor — all in one sidebar.</p>
         <button class="primary primary--xl" id="ob-next-1" type="button"><span>Continue</span> <span class="btn-arrow">→</span></button>
         <span class="ob-foot">Takes 10 seconds · No account required</span>
       </div>
       <div class="onboarding-step hidden" id="ob-step-2">
-        <h1>Your block list</h1>
-        <p>Add a site and Auren makes it unreachable everywhere on this machine. Changes apply instantly.</p>
+        <h1>Your policy, your machine</h1>
+        <p>Pick a workspace folder to isolate agents. Everything outside it is denied by default — and <code>.env</code>, <code>.ssh</code>, keys, and browser stores are blocked even inside it.</p>
         <p>Turning protection <strong>off</strong> requires biometrics — plus a 5-second cooldown — so an agent can't quietly disable it.</p>
         <p id="ob-shield" class="ob-note">While protection is on, Auren also hides your keystrokes: this window can't be screen-captured, and interception is blocked.</p>
         <button class="primary primary--xl" id="ob-finish" type="button"><span>Start protecting</span> <span class="btn-arrow">→</span></button>
@@ -81,7 +76,7 @@
         </div>
       </div>
       <div class="topbar-right">
-        <span class="build-tag" aria-hidden="true">SYSTEM-WIDE · v0.4.0</span>
+        <span class="build-tag" aria-hidden="true">ZERO-KNOWLEDGE · v0.4.0</span>
         <span class="status-pill" id="status-pill" role="status" aria-live="polite">
           <span class="dot"></span>
           <span id="status-label">Loading…</span>
@@ -152,7 +147,7 @@
                   <span class="live-dot"></span>
                   Active
                 </span>
-                <span class="shield-badge hidden" id="keystroke-shield-badge" role="status" title="While Protection is on, Auren hides your keystrokes: this window can't be screen-captured, and Secure Event Input blocks keystroke-reading agents from reading what you type here.">
+                <span class="shield-badge hidden" id="keystroke-shield-badge" role="status" title="While Protection is on, Auren hides your keystrokes">
                   <svg class="shield-key-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                     <circle cx="8.5" cy="15" r="3.2" stroke="currentColor" stroke-width="1.7"/>
                     <path d="M10.8 12.7L19 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
@@ -202,137 +197,384 @@
       </div>
     </section>
 
-    <!-- main grid -->
-    <div class="layout">
+    <!-- APP SHELL: sidebar + tab panels -->
+    <div class="app-shell">
+      <nav class="sidebar" aria-label="Modules">
+        <button class="nav-item active" data-tab="network" type="button">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 12h17M12 3.5a14 14 0 010 17M12 3.5a14 14 0 000 17" stroke="currentColor" stroke-width="1.25" opacity="0.9"/></svg>
+          </span>
+          <span class="nav-label">Network &amp; Domain</span>
+          <span class="nav-sub">DNS & transport</span>
+        </button>
+        <button class="nav-item" data-tab="apps" type="button">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 9a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM12.5 9a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM8.5 15a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM12.5 15a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0z" fill="currentColor" opacity="0.95"/></svg>
+          </span>
+          <span class="nav-label">Apps &amp; Controls</span>
+          <span class="nav-sub">Process isolation</span>
+        </button>
+        <button class="nav-item" data-tab="fs" type="button">
+          <span class="nav-icon nav-icon--accent" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M4 6.5A2.5 2.5 0 016.5 4H12l2 2h3.5A2.5 2.5 0 0120 8.5V17a2.5 2.5 0 01-2.5 2.5H6.5A2.5 2.5 0 014 17V6.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 13l3 3 5-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span class="nav-label">File System Guard</span>
+          <span class="nav-sub">Virtual isolation</span>
+          <span class="nav-badge" id="fs-mount-badge">0 mounts</span>
+        </button>
+        <button class="nav-item" data-tab="sandbox" type="button">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none"><rect x="5" y="5" width="14" height="14" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M9 9.5h.01M15 9.5h.01M9 14.5h.01M15 14.5h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M12 8v8M8 12h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" opacity="0.6"/></svg>
+          </span>
+          <span class="nav-label">Runtime &amp; Sandbox</span>
+          <span class="nav-sub">Monitor & events</span>
+          <span class="nav-dot" id="sandbox-dot" aria-hidden="true"></span>
+        </button>
 
-      <!-- stats — premium glass rail -->
-      <div class="col col-stats">
-        <div class="stats-head">
-          <span class="stats-eyebrow">Overview</span>
-          <span class="stats-live"><span class="stats-live-dot"></span> Live</span>
+        <div class="sidebar-footer">
+          <span class="sidebar-foot-title">Privacy</span>
+          <span class="sidebar-foot-text">All policies are evaluated locally. Nothing leaves this machine. Encrypted at rest.</span>
+          <span class="sidebar-foot-local">● &nbsp;Local-only · zero-knowledge</span>
         </div>
-        <section class="stat-tile">
-          <span class="stat-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M12 3.5l8 2.6v5.4c0 4.4-3 8.1-8 9.7-5-1.6-8-5.3-8-9.7V6.1l8-2.6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-          </span>
-          <span class="stat-label">Protected sites</span>
-          <span class="stat-value" id="stat-sites">0</span>
+      </nav>
+
+      <div class="tab-panels">
+
+        <!-- TAB 1: Network & Domain Blocker -->
+        <section id="tab-network" class="tab-panel active" role="tabpanel" aria-label="Network & Domain Blocker">
+          <div class="tab-head">
+            <div>
+              <h2>Network &amp; Domain Blocker</h2>
+              <p>DNS-level and transport-layer blocking. Categories, SSH, and Ping/ICMP are gated by Protection Mode.</p>
+            </div>
+            <span class="count-chip" id="sites-count">0</span>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 12h17M12 3.5a14 14 0 010 17M12 3.5a14 14 0 000 17" stroke="currentColor" stroke-width="1.25" opacity="0.9"/></svg>
+                </span>
+                <h2>Sites your agent can't visit</h2>
+              </div>
+            </div>
+            <form id="add-form">
+              <div class="input-wrap">
+                <svg class="input-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                <input id="domain-input" type="text" placeholder="bank.com, mail.google.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+              </div>
+              <button class="primary" id="add-btn" type="submit"><span>Block</span></button>
+            </form>
+            <p class="error hidden" id="add-error"></p>
+            <ul id="block-list" class="block-list"></ul>
+            <div class="empty hidden" id="block-empty">
+              <span class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.4" opacity="0.5"/><path d="M9 9l6 6M15 9l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0.45"/></svg></span>
+              <span>No sites blocked yet. Add one above to make it unreachable on this computer.</span>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:16px">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none"><path d="M12 3.5l8 2.6v5.4c0 4.4-3 8.1-8 9.7-5-1.6-8-5.3-8-9.7V6.1l8-2.6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+                </span>
+                <h2>Transport &amp; Category Controls</h2>
+              </div>
+              <span class="privacy-chip">Protection-gated</span>
+            </div>
+
+            <div class="control-row">
+              <div class="control-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M4 12h16M12 4v16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/></svg></div>
+              <div class="control-text"><strong>Domain blocklists active</strong><span>All domains above are refused via NXDOMAIN while Protection is on.</span></div>
+              <span class="control-pill on">ON when protected</span>
+            </div>
+            <div class="control-row">
+              <div class="control-icon"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="7" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v5l3 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></div>
+              <div class="control-text"><strong>SSH / SCC / SFTP</strong><span>Outbound port 22 blocked at the OS firewall (pf / Windows Firewall).</span></div>
+              <span class="control-pill" id="pill-ssh">—</span>
+            </div>
+            <div class="control-row">
+              <div class="control-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M12 7l3 3-3 3-3-3 3-3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 13v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></div>
+              <div class="control-text"><strong>Ping / ICMP</strong><span>ICMP echo & traceroute blocked at the OS firewall while protected.</span></div>
+              <span class="control-pill" id="pill-icmp">—</span>
+            </div>
+            <div class="control-row">
+              <div class="control-icon"><svg viewBox="0 0 24 24" fill="none"><rect x="4.5" y="6" width="15" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M8 10h8M8 14h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></div>
+              <div class="control-text"><strong>Sensitive website categories</strong><span>Blocklists cover categories you add — banking, internal tools, etc.</span></div>
+              <span class="control-pill on">via blocklist</span>
+            </div>
+
+            <p class="note">HTTPS hostname blocking (loopback SNI proxy on 127.0.0.1:42792) refuses blocked hosts without decrypting — and UDP 443 (QUIC) is dropped so everything falls back to the proxy.</p>
+          </div>
+
+          <div class="stats-strip" id="stats-strip">
+            <span class="stat-mini"><strong id="stat-sites">0</strong> protected sites</span>
+            <span class="stat-mini"><strong id="stat-blocks">0</strong> attempts blocked</span>
+            <span class="stat-mini"><strong id="stat-os">0</strong> OS commands blocked</span>
+          </div>
         </section>
-        <section class="stat-tile">
-          <span class="stat-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.6"/><path d="M9 9l6 6M15 9l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-          </span>
-          <span class="stat-label">Attempts blocked</span>
-          <span class="stat-value" id="stat-blocks">0</span>
+
+        <!-- TAB 2: Application & Process Controls -->
+        <section id="tab-apps" class="tab-panel" role="tabpanel" aria-label="Application & Process Controls">
+          <div class="tab-head">
+            <div>
+              <h2>Application &amp; Process Controls</h2>
+              <p>Containment for apps and auto-fill. Process isolation is enforced by the OS firewall + daemon.</p>
+            </div>
+            <span class="count-chip" id="apps-count">0</span>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 9a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM12.5 9a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM8.5 15a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM12.5 15a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0z" fill="currentColor" opacity="0.95"/></svg>
+                </span>
+                <h2>Apps your agent can't run</h2>
+              </div>
+            </div>
+            <div class="input-wrap">
+              <svg class="input-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+              <input id="app-search-input" type="text" placeholder="Discord, Safari, Slack…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+            </div>
+            <ul id="app-matches" class="app-matches hidden"></ul>
+            <p class="error hidden" id="app-error"></p>
+            <ul id="app-block-list" class="block-list"></ul>
+            <div class="empty hidden" id="app-block-empty">
+              <span class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="5" y="5" width="14" height="14" rx="3" stroke="currentColor" stroke-width="1.4" opacity="0.5"/><path d="M9 12h6M12 9v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0.45"/></svg></span>
+              <span>No apps blocked yet. Search above and pick an app to make it unable to run while Protection is on.</span>
+            </div>
+            <p class="note">While Protection is on, a blocked app is killed the moment it starts (checked every ~200 ms). Renaming it can evade this — it's a guardrail, not a sandbox.</p>
+          </div>
+
+          <div class="card" style="margin-top:16px">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="4.5" y="6" width="15" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M8 8h.01M16 8h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></span>
+                <h2>Process isolation &amp; Auto-fill</h2>
+              </div>
+              <span class="privacy-chip">Local-only</span>
+            </div>
+            <div class="control-row">
+              <div class="control-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" stroke="currentColor" stroke-width="1.6"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4l1.4-1.4M17 7l1.4-1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></div>
+              <div class="control-text"><strong>Agent execution permissions</strong><span>Agents that route through Auren's bridge hit the command gate (ssh, curl, … blocked by default).</span></div>
+              <span class="control-pill on">gated</span>
+            </div>
+            <div class="control-row">
+              <div class="control-icon"><svg viewBox="0 0 24 24" fill="none"><rect x="6" y="7" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.6"/><path d="M9 11h6M9 14h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+              <div class="control-text"><strong>Auto-fill blocking rules</strong><span>Chrome/Brave/Edge autofill (passwords, cards, addresses) is blocked while protected.</span></div>
+              <span class="control-pill" id="pill-autofill">—</span>
+            </div>
+            <div class="control-row">
+              <div class="control-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4l7 4v6c0 3.5-2.4 6.5-7 8-4.6-1.5-7-4.5-7-8V8l7-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 9v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></div>
+              <div class="control-text"><strong>Keystroke shielding</strong><span>Window content protection + Secure Event Input while focused.</span></div>
+              <span class="control-pill" id="pill-keystroke">—</span>
+            </div>
+            <p class="note">Auto-fill policies are Chromium-family managed prefs (no browser data is modified). Effective at next browser launch.</p>
+
+            <div class="stats-strip">
+              <span class="stat-mini"><strong id="stat-apps">0</strong> apps blocked</span>
+              <span class="stat-mini"><strong id="stat-gated">0</strong> actions gated</span>
+            </div>
+          </div>
         </section>
-        <section class="stat-tile">
-          <span class="stat-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><rect x="4.5" y="5" width="15" height="13" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M8 9h8M8 12h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-          </span>
-          <span class="stat-label">Actions gated</span>
-          <span class="stat-value" id="stat-gated">0</span>
+
+        <!-- TAB 3: File System Guard & Virtual Isolation -->
+        <section id="tab-fs" class="tab-panel" role="tabpanel" aria-label="File System Guard & Virtual Isolation">
+          <div class="tab-head">
+            <div>
+              <h2>File System Guard <span class="beta-badge">Key Feature</span></h2>
+              <p>Local file-system isolation. Default-deny — agents only see folders you explicitly mount. Sensitive files are always denied.</p>
+            </div>
+            <span class="privacy-chip">Zero-knowledge</span>
+          </div>
+
+          <div class="card fs-hero-card">
+            <div class="fs-hero-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M4 6.5A2.5 2.5 0 016.5 4H12l2 2h3.5A2.5 2.5 0 0120 8.5V17a2.5 2.5 0 01-2.5 2.5H6.5A2.5 2.5 0 014 17V6.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" stroke="currentColor" stroke-width="1.4"/></svg>
+            </div>
+            <div class="fs-hero-text">
+              <strong>Default-deny Virtual Mounts</strong>
+              <span>The agent starts with <em>zero</em> file access. Add one or more workspace directories below — only those folders are visible. Everything else is refused before the read happens. Mounts are stored locally in the encrypted store and — on macOS — as Security-Scoped Bookmarks.</span>
+            </div>
+            <span class="control-pill on">enforce</span>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 6.5A2.5 2.5 0 016.5 4H12l2 2h3.5A2.5 2.5 0 0120 8.5V17a2.5 2.5 0 01-2.5 2.5H6.5A2.5 2.5 0 014 17V6.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 12l2 2 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                <h2>Workspace directories</h2>
+              </div>
+              <button class="primary primary--sm" id="fs-pick-btn" type="button">Choose folder…</button>
+            </div>
+
+            <div class="fs-mounts" id="fs-mounts"></div>
+            <div class="empty" id="fs-empty">
+              <span class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 6.5A2.5 2.5 0 016.5 4H12l2 2h3.5A2.5 2.5 0 0120 8.5V17a2.5 2.5 0 01-2.5 2.5H6.5A2.5 2.5 0 014 17V6.5z" stroke="currentColor" stroke-width="1.4" opacity="0.5"/><path d="M12 10v6M10 12h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0.45"/></svg></span>
+              <span>No workspace mounted. Agents have no file access until you add a folder. Use <strong>Choose folder…</strong> to create a restricted Virtual Mount Point.</span>
+            </div>
+            <p class="error hidden" id="fs-error"></p>
+            <p class="note">On macOS, Auren requests a Security-Scoped Bookmark so the mount survives re-sandboxing. On Windows, the mount is enforced via explicit ACL containment. In both cases, the OS standard app-data directory stores the encrypted policy — never a remote database.</p>
+          </div>
+
+          <div class="card" style="margin-top:16px">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 3.5l8 2.6v5.4c0 4.4-3 8.1-8 9.7-5-1.6-8-5.3-8-9.7V6.1l8-2.6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 12l2 2 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                <h2>Strict Path &amp; Extension Exclusion Rules</h2>
+              </div>
+              <span class="privacy-chip">Always enforced</span>
+            </div>
+            <p class="note" style="margin-top:0">These are <strong>never</strong> accessible to an agent — even inside a mounted workspace. No toggle can disable them.</p>
+
+            <div class="exclusion-grid">
+              <div class="exclusion-group">
+                <h3>Dotfiles &amp; env</h3>
+                <div class="exclusion-chips" id="excl-dotfiles"></div>
+              </div>
+              <div class="exclusion-group">
+                <h3>Keys &amp; credentials</h3>
+                <div class="exclusion-chips" id="excl-keys"></div>
+              </div>
+              <div class="exclusion-group">
+                <h3>Sensitive dirs</h3>
+                <div class="exclusion-chips" id="excl-dirs"></div>
+              </div>
+              <div class="exclusion-group">
+                <h3>Browser stores</h3>
+                <div class="exclusion-chips" id="excl-browser"></div>
+              </div>
+            </div>
+            <p class="note">Examples: <code>.env</code>, <code>.env.*</code>, <code>.ssh/*</code>, <code>*.pem</code>, <code>*.key</code>, <code>keychain</code>, <code>Login Data</code>, <code>Cookies</code> — and any path containing those segments.</p>
+          </div>
+
+          <div class="card" style="margin-top:16px">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4l2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
+                <h2>Dynamic path sanitizer</h2>
+              </div>
+              <span class="privacy-chip">Canonical-first</span>
+            </div>
+            <p class="note" style="margin-top:0">Every path is canonicalized — symbolic links resolved, <code>../</code> collapsed, and redundant separators removed — <em>before</em> the guard checks it. This beats <code>workspace/../../.ssh/id_rsa</code> style traversals.</p>
+
+            <div class="sanitizer-row">
+              <div class="input-wrap" style="flex:1">
+                <svg class="input-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 016.5 4H12l2 2h3.5A2.5 2.5 0 0120 8.5V17a2.5 2.5 0 01-2.5 2.5H6.5A2.5 2.5 0 014 17V6.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+                <input id="fs-test-input" type="text" placeholder="e.g. ~/workspace/../workspace/.env or /tmp/link-to-ssh" autocomplete="off" spellcheck="false" />
+              </div>
+              <button class="primary" id="fs-test-btn" type="button">Check access</button>
+            </div>
+            <div id="fs-test-result" class="fs-test-result hidden"></div>
+            <p class="note">Try <code>../</code>, a symlink, or <code>.env</code> — the guard always evaluates the canonical absolute path.</p>
+          </div>
         </section>
-        <section class="stat-tile">
-          <span class="stat-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="7" width="18" height="10" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M7 12h3M14 12h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-          </span>
-          <span class="stat-label">OS commands blocked</span>
-          <span class="stat-value" id="stat-os">0</span>
+
+        <!-- TAB 4: Local Runtime & Sandbox Monitor -->
+        <section id="tab-sandbox" class="tab-panel" role="tabpanel" aria-label="Local Runtime & Sandbox Monitor">
+          <div class="tab-head">
+            <div>
+              <h2>Local Runtime &amp; Sandbox Monitor</h2>
+              <p>OS-level sandboxing dashboard + real-time ephemeral event log. Nothing here is persisted to disk.</p>
+            </div>
+            <span class="privacy-chip">Ephemeral · in-memory</span>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 3.5l8 2.6v5.4c0 4.4-3 8.1-8 9.7-5-1.6-8-5.3-8-9.7V6.1l8-2.6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12l2 2 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                <h2>Sandbox status</h2>
+              </div>
+              <span class="control-pill" id="sandbox-platform">—</span>
+            </div>
+
+            <div class="sandbox-grid">
+              <div class="sandbox-tile">
+                <span class="sandbox-tile-label">App Sandbox</span>
+                <span class="sandbox-tile-value" id="sb-app-sandbox">—</span>
+                <span class="sandbox-tile-sub" id="sb-app-sandbox-sub">macOS entitlement</span>
+              </div>
+              <div class="sandbox-tile">
+                <span class="sandbox-tile-label">Hardened Runtime</span>
+                <span class="sandbox-tile-value" id="sb-hardened">—</span>
+                <span class="sandbox-tile-sub">code-sign flags</span>
+              </div>
+              <div class="sandbox-tile">
+                <span class="sandbox-tile-label">Firewall anchor</span>
+                <span class="sandbox-tile-value" id="sb-pf">—</span>
+                <span class="sandbox-tile-sub">pf / Windows Firewall</span>
+              </div>
+              <div class="sandbox-tile">
+                <span class="sandbox-tile-label">HTTPS proxy (SNI)</span>
+                <span class="sandbox-tile-value" id="sb-proxy">—</span>
+                <span class="sandbox-tile-sub" id="sb-proxy-sub">127.0.0.1:42792</span>
+              </div>
+            </div>
+
+            <div class="sandbox-entitlements">
+              <h3>Active entitlements / capabilities</h3>
+              <div id="sb-entitlements" class="exclusion-chips"></div>
+              <p class="note" id="sb-entitlements-note">Entitlements are the OS-declared capabilities the app was signed with. On Windows this shows the integrity level and AppContainer state.</p>
+            </div>
+
+            <div id="sandbox-win-info" class="hidden">
+              <div class="control-row">
+                <div class="control-icon"><svg viewBox="0 0 24 24" fill="none"><rect x="5" y="5" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M9 12h6M12 9v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></div>
+                <div class="control-text"><strong>Windows AppContainer</strong><span id="sb-appcontainer-text">—</span></div>
+                <span class="control-pill" id="sb-appcontainer-pill">—</span>
+              </div>
+              <div class="control-row">
+                <div class="control-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" stroke="currentColor" stroke-width="1.6"/></svg></div>
+                <div class="control-text"><strong>Integrity level</strong><span id="sb-integrity-text">—</span></div>
+                <span class="control-pill" id="sb-integrity-pill">—</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:16px">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 7.5V12l3 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                <h2>Blocked system calls — live</h2>
+              </div>
+              <button class="ghost" id="sandbox-clear" type="button">Clear</button>
+            </div>
+            <p class="note" style="margin-top:0">Real-time log of blocked file reads/writes. Stored strictly in local ephemeral memory (in-memory ring buffer, max 200 entries) — never written to disk, never transmitted.</p>
+            <ul id="sandbox-events" class="activity-list"></ul>
+            <div class="empty hidden" id="sandbox-empty">
+              <span class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.4" opacity="0.35"/></svg></span>
+              <span>No blocked calls yet — quiet is good. Events appear here the moment the File System Guard denies a read or write.</span>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:16px">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.4"/></svg></span>
+                <h2>Recent activity</h2>
+              </div>
+              <span class="privacy-chip">Privacy first</span>
+            </div>
+            <ul id="activity-list" class="activity-list"></ul>
+            <div class="empty hidden" id="activity-empty">
+              <span class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.4" opacity="0.35"/></svg></span>
+              <span>No activity yet — everything looks quiet.</span>
+            </div>
+            <p class="note">Only the site name, time, and outcome are recorded — never your data.</p>
+          </div>
         </section>
-        <section class="stat-tile">
-          <span class="stat-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><rect x="5" y="5" width="14" height="14" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M9 9.5h.01M15 9.5h.01M9 14.5h.01M15 14.5h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
-          </span>
-          <span class="stat-label">Apps blocked</span>
-          <span class="stat-value" id="stat-apps">0</span>
-        </section>
+
       </div>
-
-      <section class="card sites-card">
-        <div class="card-head">
-          <div class="card-head-left">
-            <span class="card-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 12h17M12 3.5a14 14 0 010 17M12 3.5a14 14 0 000 17" stroke="currentColor" stroke-width="1.25" opacity="0.9"/><path d="M8.5 12a3.5 3.5 0 007 0 3.5 3.5 0 00-7 0z" stroke="currentColor" stroke-width="1.25"/></svg>
-            </span>
-            <h2>Sites your agent can't visit</h2>
-          </div>
-          <span class="count-chip" id="sites-count">0</span>
-        </div>
-        <form id="add-form">
-          <div class="input-wrap">
-            <svg class="input-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-            </svg>
-            <input id="domain-input" type="text" placeholder="bank.com, mail.google.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-          </div>
-          <button class="primary" id="add-btn" type="submit"><span>Block</span></button>
-        </form>
-        <p class="error hidden" id="add-error"></p>
-        <ul id="block-list" class="block-list"></ul>
-        <div class="empty hidden" id="block-empty">
-          <span class="empty-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.4" opacity="0.5"/><path d="M9 9l6 6M15 9l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0.45"/></svg>
-          </span>
-          <span>No sites blocked yet. Add one above to make it unreachable on this computer.</span>
-        </div>
-        <p class="note">While Protection is on, Auren also blocks OS & terminal-level network access — ping, ssh, FTP/Telnet, and cloud-metadata endpoints — for every process, including your own terminal.</p>
-      </section>
-
-      <section class="card apps-card">
-        <div class="card-head">
-          <div class="card-head-left">
-            <span class="card-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 9a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM12.5 9a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM8.5 15a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zM12.5 15a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0z" fill="currentColor" stroke="none" opacity="0.95"/></svg>
-            </span>
-            <h2>Apps your agent can't run</h2>
-          </div>
-          <span class="count-chip" id="apps-count">0</span>
-        </div>
-        <div class="input-wrap">
-          <svg class="input-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/>
-            <path d="M16 16l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-          </svg>
-          <input id="app-search-input" type="text" placeholder="Discord, Safari, Slack…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-        </div>
-        <ul id="app-matches" class="app-matches hidden"></ul>
-        <p class="error hidden" id="app-error"></p>
-        <ul id="app-block-list" class="block-list"></ul>
-        <div class="empty hidden" id="app-block-empty">
-          <span class="empty-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><rect x="5" y="5" width="14" height="14" rx="3" stroke="currentColor" stroke-width="1.4" opacity="0.5"/><path d="M9 12h6M12 9v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0.45"/></svg>
-          </span>
-          <span>No apps blocked yet. Search above and pick an app to make it unable to run while Protection is on.</span>
-        </div>
-        <p class="note">While Protection is on, a blocked app is killed the moment it starts (checked every ~200 ms). Renaming it can evade this — it's a guardrail, not a sandbox.</p>
-      </section>
-
-      <section class="card activity-card">
-        <div class="card-head">
-          <div class="card-head-left">
-            <span class="card-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 7.5V12l3 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </span>
-            <h2>Recent activity</h2>
-          </div>
-          <span class="privacy-chip" title="Only site names, times, and outcomes are recorded">Privacy first</span>
-        </div>
-        <ul id="activity-list" class="activity-list"></ul>
-        <div class="empty hidden" id="activity-empty">
-          <span class="empty-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.4" opacity="0.35"/></svg>
-          </span>
-          <span>No activity yet — everything looks quiet.</span>
-        </div>
-        <p class="note">Only the site name, time, and outcome are recorded — never your data.</p>
-      </section>
     </div>
 
     <footer class="footer-note">
       <span class="footer-rule" aria-hidden="true"></span>
-      <span>Auren blocks websites at the network level on this computer. For the full picture of what it covers and where its limits are, see the README.</span>
-      <span class="footer-meta" aria-hidden="true">Crafted for launch · Encrypted at rest · Biometric-gated</span>
+      <span>Auren is zero-knowledge and local-only. Your workspace mounts, blocklists, and settings live in the OS-standard app data directory, encrypted at rest (AES-256-GCM + HMAC). No data is ever collected or transmitted.</span>
+      <span class="footer-meta" aria-hidden="true">Crafted for launch · Encrypted at rest · Biometric-gated · Zero-knowledge</span>
     </footer>
   </main>
 

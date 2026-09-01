@@ -102,7 +102,7 @@ function route(req, res) {
     return;
   }
 
-  if (req.method === 'POST' && (routePath === '/v1/check/action' || routePath === '/v1/check/command')) {
+  if (req.method === 'POST' && (routePath === '/v1/check/action' || routePath === '/v1/check/command' || routePath === '/v1/check/fs')) {
     readBody(req).then(
       (buf) => {
         let body;
@@ -112,9 +112,11 @@ function route(req, res) {
         let decision;
         if (routePath === '/v1/check/action') {
           decision = handlers.checkAction ? handlers.checkAction(body) : null;
-        } else {
+        } else if (routePath === '/v1/check/command') {
           const cmd = (body && body.command != null) ? body.command : body;
           decision = handlers.checkCommand ? handlers.checkCommand(cmd) : null;
+        } else {
+          decision = handlers.checkFs ? handlers.checkFs(body) : null;
         }
         if (decision === null) { sendJson(res, 404, { error: 'not found' }); return; }
         Promise.resolve(decision).then(
