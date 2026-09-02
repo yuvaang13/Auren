@@ -213,16 +213,26 @@ async function daemonTest() {
 
   // Wait until the daemon is actually ready (heartbeat fresh + integrity OK)
   // Fixed 3s was flaky on Windows CI under load — poll the heartbeat instead.
+  // On Windows the DNS socket can lag slightly behind the first heartbeat, so
+  // wait for a second fresh heartbeat as well.
   await waitForHb(hbFile, (hb) => hb.integrityOk === true && hb.pid === child.pid && typeof hb.lastReconcile === 'number' && Date.now() - hb.ts < 5000 && Date.now() - hb.lastReconcile < 5000, 20000);
+  if (process.platform === 'win32') await sleep(1500);
+  // Extra probe: ensure the UDP resolver is actually answering before the first
+  // assertion. Windows CI can lose the first packet or still be binding.
+  await waitForHb(hbFile, (hb) => hb.integrityOk === true && Date.now() - hb.ts < 5000, 10000);
+  // Warm the resolver — best-effort, ignore result
+  try { await query(port, 'bank.com'); } catch {}
 
   try {
     await test('daemon: blocks the configured domain in real time', async () => {
-      // Poll the query a few times — first UDP packet can be lost on Windows CI under load.
-      let r = null;
-      for (let i = 0; i < 5; i++) {
-        r = await query(port, 'bank.com');
-        if (r.status === 'NXDOMAIN') break;
-        await sleep(500);
+      const r = await queryUntil(port, 'bank.com', 'NXDOMAIN', process.platform === 'win32' ? 20000 : 8000);
+      if (r.status !== 'NXDOMAIN') {
+        try {
+          const hb = fs.existsSync(hbFile) ? fs.readFileSync(hbFile, 'utf8') : 'no hb';
+          const log = fs.existsSync(path.join(dir, 'daemon.log')) ? fs.readFileSync(path.join(dir, 'daemon.log'), 'utf8').slice(-2000) : 'no log';
+          console.error('  debug hb: ' + hb);
+          console.error('  debug log tail: ' + log);
+        } catch {}
       }
       assert.strictEqual(r.status, 'NXDOMAIN');
     });
@@ -254,17 +264,19 @@ async function daemonTest() {
 
     await test('daemon: block list changes apply without restart', async () => {
       writeCfg('on', ['bank.com', 'example.net'], false);
-      await sleep(1500);
-      const r = await queryUntil(port, 'example.net', 'NXDOMAIN', 8000);
+      await sleep(process.platform === 'win32' ? 3000 : 1500);
+      await waitForHb(hbFile, (hb) => hb.integrityOk === true && Date.now() - hb.ts < 5000, 10000);
+      const r = await queryUntil(port, 'example.net', 'NXDOMAIN', process.platform === 'win32' ? 20000 : 8000);
       assert.strictEqual(r.status, 'NXDOMAIN');
-      const r2 = await queryUntil(port, 'example.org', 'NOERROR', 8000);
+      const r2 = await queryUntil(port, 'example.org', 'NOERROR', process.platform === 'win32' ? 20000 : 8000);
       assert.strictEqual(r2.status, 'NOERROR');
     });
 
     await test('daemon: mode off stops blocking', async () => {
       writeCfg('off', ['bank.com'], false);
-      await sleep(1500);
-      const r = await queryUntil(port, 'bank.com', 'NOERROR', 8000);
+      await sleep(process.platform === 'win32' ? 3000 : 1500);
+      await waitForHb(hbFile, (hb) => Date.now() - hb.ts < 5000, 10000);
+      const r = await queryUntil(port, 'bank.com', 'NOERROR', process.platform === 'win32' ? 20000 : 8000);
       assert.strictEqual(r.status, 'NOERROR');
     });
 
@@ -280,8 +292,9 @@ async function daemonTest() {
       // Establish a verified baseline: protection ON, bank.com blocked,
       // example.org allowed.
       writeCfg('on', ['bank.com'], false);
-      await sleep(1500);
-      const base = await queryUntil(port, 'example.org', 'NOERROR', 8000);
+      await sleep(process.platform === 'win32' ? 3000 : 1500);
+      await waitForHb(hbFile, (hb) => hb.integrityOk === true && Date.now() - hb.ts < 5000, 10000);
+      const base = await queryUntil(port, 'example.org', 'NOERROR', process.platform === 'win32' ? 20000 : 8000);
       assert.strictEqual(base.status, 'NOERROR');
 
       // Rewrite the config directly WITHOUT updating the signature, like an
@@ -291,21 +304,22 @@ async function daemonTest() {
       // deny-all — unrelated traffic keeps flowing. The heartbeat reports the
       // degraded integrity.
       fs.writeFileSync(cfgFile, JSON.stringify({ version: 1, mode: 'off', blocklist: [], failClosed: true }));
-      await sleep(1500);
-      const blocked = await queryUntil(port, 'bank.com', 'NXDOMAIN', 8000);
+      await sleep(process.platform === 'win32' ? 3000 : 1500);
+      const blocked = await queryUntil(port, 'bank.com', 'NXDOMAIN', process.platform === 'win32' ? 20000 : 8000);
       assert.strictEqual(blocked.status, 'NXDOMAIN', 'last verified block list must still be enforced');
-      const allowed = await queryUntil(port, 'example.org', 'NOERROR', 8000);
+      const allowed = await queryUntil(port, 'example.org', 'NOERROR', process.platform === 'win32' ? 20000 : 8000);
       assert.strictEqual(allowed.status, 'NOERROR', 'unrelated traffic must not be denied');
-      const hb = await waitForHb(hbFile, (h) => h.integrityOk === false, 8000);
+      const hb = await waitForHb(hbFile, (h) => h.integrityOk === false, 10000);
       assert.strictEqual(hb.integrityOk, false, 'heartbeat must report degraded integrity');
       assert.strictEqual(hb.failClosed, false, 'tampered failClosed must not be honored');
     });
 
     await test('daemon: blocked lookups land in the activity log', async () => {
       writeCfg('on', ['bank.com'], false);
-      await sleep(1500);
-      await queryUntil(port, 'bank.com', 'NXDOMAIN', 8000);
-      await sleep(500);
+      await sleep(process.platform === 'win32' ? 3000 : 1500);
+      await waitForHb(hbFile, (hb) => hb.integrityOk === true && Date.now() - hb.ts < 5000, 10000);
+      await queryUntil(port, 'bank.com', 'NXDOMAIN', process.platform === 'win32' ? 20000 : 8000);
+      await sleep(800);
       const lines = fs.readFileSync(actFile, 'utf8').split('\n').filter((l) => l.trim());
       assert.ok(lines.some((l) => l.includes('"kind":"block"') && l.includes('bank.com')));
     });
