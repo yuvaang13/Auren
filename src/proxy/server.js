@@ -33,7 +33,7 @@ const net = require('net');
 const sni = require('./sni');
 
 const DEFAULT_PORT = 42792;
-const HEADER_TIMEOUT_MS = 10000;
+const HEADER_TIMEOUT_MS = 3000;
 const MAX_HEAD_BYTES = 16384;
 
 let server = null;
@@ -65,8 +65,24 @@ function parseConnectLine(line) {
 }
 
 function isLoopback(ip) {
-  const ip4 = String(ip || '').replace(/^::ffff:/, '');
-  return ip4 === '127.0.0.1' || ip4 === '::1';
+  const raw = String(ip || '').trim();
+  // Handle zone IDs (e.g. 127.0.0.1%lo0, ::1%lo0) and IPv4-mapped variants
+  const noZone = raw.split('%')[0];
+  const lower = noZone.toLowerCase();
+  // Strip ::ffff: prefix variants, including hex forms
+  const stripped = lower.replace(/^::ffff:/, '').replace(/^\[::ffff:/, '');
+  // Handle bracketed forms
+  const ip4 = stripped.replace(/^\[|\]$/g, '');
+  // Normalize hex 127.0.0.1 variants: 7f00:1, 0:0:0:0:0:ffff:7f00:1 etc -> treat as loopback if parsed as 127.0.0.1
+  if (ip4 === '127.0.0.1' || ip4 === '::1' || ip4 === '::' || ip4 === '0:0:0:0:0:0:0:1') return true;
+  // Check for 127.0.0.0/8 range via net.isIP
+  if (net.isIP(ip4) === 4) {
+    const parts = ip4.split('.').map(Number);
+    if (parts[0] === 127) return true;
+  }
+  // Final check with original stripping
+  const simple = String(ip || '').replace(/^::ffff:/i, '').split('%')[0];
+  return simple === '127.0.0.1' || simple === '::1';
 }
 
 function respond(socket, status) {
@@ -94,11 +110,20 @@ function tunnel(socket, host, port, pre) {
 }
 
 // CONNECT to an IP literal: the authority tells us nothing, so decide from the
-// ClientHello SNI after the 200. Unreadable / missing SNI is fail-closed.
+// ClientHello SNI BEFORE sending 200. Unreadable / missing SNI is fail-closed.
 function handleIpConnect(socket, req, pre) {
   let buffer = pre || Buffer.alloc(0);
   let done = false;
-  const timer = setTimeout(() => { if (!done) socket.destroy(); }, HEADER_TIMEOUT_MS);
+  const timer = setTimeout(() => {
+    if (!done) {
+      done = true;
+      socket.removeAllListeners('data');
+      if (ctx.onUnreadable) ctx.onUnreadable();
+      // Fail-closed: refuse with 403 if SNI never readable
+      try { socket.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'); } catch {}
+      socket.destroy();
+    }
+  }, HEADER_TIMEOUT_MS);
 
   const decide = () => {
     const host = sni.parseSni(buffer);
@@ -108,23 +133,31 @@ function handleIpConnect(socket, req, pre) {
       socket.removeAllListeners('data');
       if (ctx.blockFn(host)) {
         if (ctx.onBlocked) ctx.onBlocked(host);
+        try { socket.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'); } catch {}
         socket.destroy();
         return;
       }
+      respond(socket, 200);
       tunnel(socket, req.host, req.port, buffer);
       return;
     }
     if (buffer.length >= MAX_HEAD_BYTES) {
       done = true;
       clearTimeout(timer);
+      socket.removeAllListeners('data');
       if (ctx.onUnreadable) ctx.onUnreadable();
+      try { socket.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'); } catch {}
       socket.destroy();
     }
   };
 
   socket.on('data', (chunk) => {
     if (done) return;
-    buffer = Buffer.concat([buffer, chunk]);
+    if (buffer.length + chunk.length > MAX_HEAD_BYTES) {
+      buffer = Buffer.concat([buffer, chunk]).slice(0, MAX_HEAD_BYTES);
+    } else {
+      buffer = Buffer.concat([buffer, chunk]);
+    }
     decide();
   });
   socket.on('error', () => { clearTimeout(timer); });
@@ -136,7 +169,7 @@ function handleConnect(socket, line, pre) {
   const req = parseConnectLine(line);
   if (!req) { socket.write('HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'); socket.end(); return; }
   if (net.isIP(req.host) > 0) {
-    respond(socket, 200);
+    // IP literal: decide on SNI before 200 (fail-closed)
     handleIpConnect(socket, req, pre);
     return;
   }

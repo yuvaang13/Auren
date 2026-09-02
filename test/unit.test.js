@@ -419,7 +419,7 @@ test('buildAnchorRules blocks known DoH/DoT endpoints before the 443 pass', () =
   assert.ok(dohIdx > -1, 'a default DoH endpoint must be blocked');
   assert.ok(pf.DEFAULT_DOH_HOSTS.every((h) => joined.includes('block out proto { tcp udp } to ' + h)), 'every default DoH endpoint gets a block rule');
   assert.ok(dohIdx > -1 && dohIdx < pass443, 'DoH blocks must precede the generic 443 pass');
-  assert.ok(dohIdx < pass53, 'DoH blocks must precede the generic 53 pass');
+  assert.ok(pass53 < dohIdx, 'generic 53 pass must precede DoH blocks so upstream DNS is not self-blocked');
 });
 
 test('buildAnchorRules dohBlock:false omits the DoH block rules', () => {

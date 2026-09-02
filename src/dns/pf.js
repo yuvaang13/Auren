@@ -57,7 +57,7 @@ const DEFAULT_DOH_HOSTS = [
 
 const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
 const IPV4_CIDR_RE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
-const IPV6_RE = /^[0-9a-f:]+$/i;
+const IPV6_RE = /^([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}$/i;
 
 function isValidHostEntry(entry) {
   const h = String(entry || '').trim();
@@ -104,8 +104,8 @@ function ruleLayout(opts) {
     .filter(isValidHostEntry);
   if (dohBlock && dohHosts.length === 0) dohHosts = DEFAULT_DOH_HOSTS.slice();
   // Header comments, then the two lo0 passes, then allowlisted ports, then
-  // allowlisted hosts, then the DoH block rules.
-  const dohStart = HEADER_COMMENTS.length + 2 + allowPorts.length + allowHosts.length;
+  // allowlisted hosts, then pass 53, then the DoH block rules.
+  const dohStart = HEADER_COMMENTS.length + 2 + allowPorts.length + allowHosts.length + 1;
   return { allowPorts, allowHosts, dohBlock, dohHosts, proxyBlock, dohStart };
 }
 
@@ -135,6 +135,9 @@ function cidrContainsIp(cidr, ip) {
     n = (n << 8) | net[i];
     h = (h << 8) | host[i];
   }
+  // Use unsigned throughout (<< yields signed, so coerce)
+  n >>>= 0;
+  h >>>= 0;
   const mask = bits === 32 ? 0xffffffff : ((~0) << (32 - bits)) >>> 0;
   return (n & mask) === (h & mask);
 }
@@ -205,10 +208,10 @@ function buildAnchorRules(opts) {
   rules.push('pass out on lo0 all');
   for (const p of allowPorts) rules.push('pass out proto { tcp udp } to port ' + p);
   for (const h of allowHosts) rules.push('pass out proto { tcp udp } to ' + h);
+  rules.push('pass out proto { tcp udp } to port 53');
   if (dohBlock) {
     for (const h of dohHosts) rules.push('block out proto { tcp udp } to ' + h);
   }
-  rules.push('pass out proto { tcp udp } to port 53');
   rules.push('pass out proto tcp to port 80');
   rules.push('pass out proto tcp to port 443');
   // QUIC (HTTP/3) runs over UDP 443 and bypasses both DNS and the HTTPS proxy.
@@ -228,16 +231,37 @@ function buildAnchorRules(opts) {
 // macOS:
 //   @0 pass in on lo0 all
 //     [ Evaluations: 12 Packets: 300 Bytes: 10000 ]
+// Real output may use single newlines between rules (no blank line), so we
+// handle both \n and \n\n separators.
 function parsePfRuleStats(text) {
+  const raw = String(text || '');
+  if (!raw.trim()) return [];
+  // Split on rule boundaries: a line starting with @ or pass/block. Use lookahead.
+  const lines = raw.split('\n');
+  const blocks = [];
+  let cur = '';
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isRuleStart = /^(?:@\d+\s+)?(?:pass|block|rdr|match|no|anchor|nat)\b/.test(trimmed);
+    if (isRuleStart && cur.trim()) {
+      blocks.push(cur);
+      cur = line;
+    } else {
+      cur += (cur ? '\n' : '') + line;
+    }
+  }
+  if (cur.trim()) blocks.push(cur);
   const stats = [];
-  const blocks = String(text || '').split(/\n\s*\n/);
   for (const block of blocks) {
     if (!block.trim()) continue;
     const m = block.match(/\[\s*Evaluations:\s*(\d+)\s+Packets:\s*(\d+)\s+Bytes:\s*(\d+)\s*\]/);
     if (m) {
       stats.push({ evaluations: Number(m[1]), packets: Number(m[2]), bytes: Number(m[3]) });
-    } else if (/^(?:@\d+\s+)?(?:pass|block|rdr|match|no|anchor|nat)\b/.test(block.trim())) {
-      stats.push({ evaluations: 0, packets: 0, bytes: 0 });
+    } else if (/^(?:@\d+\s+)?(?:pass|block|rdr|match|no|anchor|nat)\b/.test(block.trim()) || block.includes('pass') || block.includes('block')) {
+      // Rule without counter line (zeroed) still occupies slot
+      if (/^(?:@\d+\s+)?(?:pass|block|rdr|match|no|anchor|nat)\b/.test(block.trim())) {
+        stats.push({ evaluations: 0, packets: 0, bytes: 0 });
+      }
     }
   }
   return stats;

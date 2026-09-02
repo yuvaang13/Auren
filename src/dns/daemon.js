@@ -844,7 +844,7 @@ function sweepDohCounters() {
 
 /* -------------------------------- main ------------------------------- */
 
-function shutdown() {
+async function shutdown() {
   log('info', 'shutting down');
   if (mode === 'on' || failClosed) {
     // Protection is live (or explicitly deny-all): leave system DNS pointed at
@@ -852,19 +852,25 @@ function shutdown() {
     // denied until launchd restarts us — never hand the machine back open.
     log('info', 'protection was on: leaving DNS pointed at local resolver (denied while down)');
   } else {
-    restoreDns();
+    try { restoreDns(); } catch (err) { log('error', 'dns restore failed: ' + err.message); }
     try { proxyops.clearProxy(state, pacUrl); } catch (err) { log('error', 'proxy restore failed: ' + err.message); }
+    // Ensure state is flushed synchronously before stop
+    try { saveState(); } catch {}
   }
-  if (proxyActive) proxyServer.stop().catch(() => {});
-  if (resolver) resolver.stop().catch(() => {});
+  const stops = [];
+  if (proxyActive) stops.push(proxyServer.stop().catch((e) => log('error', 'proxy stop failed: ' + e.message)));
+  if (resolver) stops.push(resolver.stop().catch((e) => log('error', 'resolver stop failed: ' + e.message)));
+  try { await Promise.all(stops); } catch {}
+  // Give a brief grace for sockets to drain
+  await new Promise((r) => setTimeout(r, 200));
   process.exit(0);
 }
 
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+process.on('SIGTERM', () => { shutdown().catch(() => process.exit(0)); });
+process.on('SIGINT', () => { shutdown().catch(() => process.exit(0)); });
 // Windows: also handle exit signals from GenerateConsoleCtrlEvent when stdio is ignored
 if (process.platform === 'win32') {
-  process.on('exit', (code) => { if (code !== 0) shutdown(); });
+  process.on('exit', (code) => { if (code !== 0) { try { restoreDns(); } catch {} } });
 }
 
 (async () => {

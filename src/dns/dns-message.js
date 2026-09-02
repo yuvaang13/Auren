@@ -68,12 +68,14 @@ function encodeName(name) {
 function extractQuestion(buf) {
   if (buf.length < 12) return null;
   const id = readU16(buf, 0);
+  const flags = readU16(buf, 2);
   const qdcount = readU16(buf, 4);
   if (qdcount < 1) return null;
   const parsed = parseName(buf, 12);
   if (!parsed || parsed.endOffset + 4 > buf.length) return null;
   return {
     id,
+    flags,
     qname: parsed.name,
     qtype: readU16(buf, parsed.endOffset),
     qclass: readU16(buf, parsed.endOffset + 2)
@@ -83,12 +85,13 @@ function extractQuestion(buf) {
 // Header block for a reply that echoes the client's RD flag.
 const REPLY_FLAGS = 0x8000 | 0x0080; // QR=1, RA=1
 
-function buildReply(id, rcode, qname, qtype, qclass) {
+function buildReply(id, rcode, qname, qtype, qclass, origFlags) {
   const question = encodeName(qname || '.');
   if (!question) return null;
   const header = Buffer.alloc(12);
   header.writeUInt16BE(id, 0);
-  header.writeUInt16BE(REPLY_FLAGS | (rcode & 0xf), 2);
+  const rd = origFlags != null ? (origFlags & 0x0100) : 0;
+  header.writeUInt16BE(REPLY_FLAGS | rd | (rcode & 0xf), 2);
   header.writeUInt16BE(1, 4); // QDCOUNT
   header.writeUInt16BE(0, 6); // ANCOUNT
   header.writeUInt16BE(0, 8); // NSCOUNT
@@ -100,12 +103,12 @@ function buildReply(id, rcode, qname, qtype, qclass) {
 }
 
 // Builds an NXDOMAIN (refused-to-resolve) response. rcode 3 = NXDOMAIN.
-function buildNxdomain(id, qname, qtype, qclass) {
-  return buildReply(id, 3, qname, qtype, qclass);
+function buildNxdomain(id, qname, qtype, qclass, origFlags) {
+  return buildReply(id, 3, qname, qtype, qclass, origFlags);
 }
 
-function buildRefused(id, qname, qtype, qclass) {
-  return buildReply(id, 5, qname, qtype, qclass);
+function buildRefused(id, qname, qtype, qclass, origFlags) {
+  return buildReply(id, 5, qname, qtype, qclass, origFlags);
 }
 
 // TCP framing: 2-byte big-endian length prefix.
