@@ -151,13 +151,18 @@ let offCooldownTimer = null;
 let offCooldownUntil = 0;
 
 // Persisted flag to prevent repeated daemon refresh prompts across app launches.
-// Stored in user data so it survives process restarts. Updated after first attempt.
+// Stored in user data so it survives process restarts. Allow retry after 1h.
 const DAEMON_REFRESH_FLAG = path.join(USER_DATA, '.daemon-refresh-flag');
+const REFRESH_COOLDOWN_MS = 60 * 60 * 1000;
 function hasDaemonRefreshAttempted() {
-  try { return fs.existsSync(DAEMON_REFRESH_FLAG); } catch { return false; }
+  try {
+    if (!fs.existsSync(DAEMON_REFRESH_FLAG)) return false;
+    const age = Date.now() - fs.statSync(DAEMON_REFRESH_FLAG).mtimeMs;
+    return age < REFRESH_COOLDOWN_MS;
+  } catch { return false; }
 }
 function markDaemonRefreshAttempted() {
-  try { fs.writeFileSync(DAEMON_REFRESH_FLAG, ''); } catch { /* best-effort */ }
+  try { fs.writeFileSync(DAEMON_REFRESH_FLAG, String(Date.now())); } catch { /* best-effort */ }
 }
 // Set once a graceful quit has cleared the protection gate, so the follow-up
 // app.quit() can't re-prompt. force-quit / kill paths never set this AND never
@@ -177,6 +182,10 @@ let storeIntegrityKey = null;
 // True when enforcement can't be trusted (daemon silent, tampered/corrupt
 // store, unverified config). Every gated surface refuses while this is set.
 let degraded = false;
+let degradedReason = null;
+let degradedSince = 0;
+let integrityFailCount = 0;
+let daemonBusySince = 0;
 
 // State of the loopback agent bridge (src/bridge/http.js). Surfaced in the UI
 // state so the dashboard can show where agents hook in.
@@ -192,6 +201,7 @@ const HEARTBEAT_STALE_MS = 8000;
 // the app launches. During those windows we don't flash "degraded" — only a
 // stale heartbeat once the daemon should be settled trips the watchdog.
 const WATCHDOG_GRACE_MS = 12000;
+const DAEMON_BUSY_TIMEOUT_MS = 30000;
 const STARTED_AT = Date.now();
 let daemonBusy = false;
 
@@ -231,6 +241,11 @@ function clearOffCooldown() {
 
 /* ---------------------------- daemon lifecycle ---------------------------- */
 
+function setDaemonBusy(v) {
+  daemonBusy = v;
+  daemonBusySince = v ? Date.now() : 0;
+}
+
 function installDaemon() {
   return dnsController.installDaemon({
     nodeBin: dnsController.findNodeBin(app.getPath('exe')),
@@ -253,7 +268,7 @@ async function refreshDaemonIfStale() {
   if (!dnsController.isDaemonInstalled() || dnsController.isDaemonCurrent()) return true;
   if (blockState.mode !== 'on' && !blockState.failClosed) return true;
   markDaemonRefreshAttempted();
-  daemonBusy = true;
+  setDaemonBusy(true);
   try {
     const res = await installDaemon();
     if (!res.ok) {
@@ -263,7 +278,7 @@ async function refreshDaemonIfStale() {
     logActivity(activity.makeEntry('daemon', 'refreshed', null, 'background service updated to match this build'));
     return true;
   } finally {
-    daemonBusy = false;
+    setDaemonBusy(false);
   }
 }
 
@@ -576,6 +591,11 @@ function persist() {
 // it even if the privileged daemon is installed later.
 function ensureFiles() {
   fs.mkdirSync(USER_DATA, { recursive: true });
+  // Ensure the system spool dir exists so the heartbeat file can be read even
+  // if the daemon hasn't yet created it (prevents "no heartbeat" false degrade on first run)
+  try { fs.mkdirSync(SYSTEM_SPOOL, { recursive: true }); } catch {}
+  // Ensure the heartbeat parent dir is world-readable so the unprivileged app can poll it
+  try { if (process.platform !== 'win32') fs.chmodSync(SYSTEM_SPOOL, 0o755); } catch {}
   storeIntegrityKey = store.loadOrCreateKey(USER_DATA);
   if (!fs.existsSync(CONFIG_FILE)) config.writeSignedConfig(CONFIG_FILE, config.DEFAULT_CONFIG, storeIntegrityKey);
   try { fs.writeFileSync(ACTIVITY_FILE, '', { flag: 'a' }); } catch {}
@@ -620,6 +640,11 @@ function notifyDegraded(body) {
 /* ------------------------------- state ------------------------------- */
 
 function getState() {
+  const now = Date.now();
+  const hbAge = lastHeartbeat && typeof lastHeartbeat.ts === 'number' ? now - lastHeartbeat.ts : null;
+  const reconAge = lastHeartbeat && typeof lastHeartbeat.lastReconcile === 'number' ? now - lastHeartbeat.lastReconcile : null;
+  let daemonInfo = null;
+  try { daemonInfo = dnsController.installedDaemonInfo ? dnsController.installedDaemonInfo() : null; } catch {}
   return {
     platform: process.platform,
     mode: blockState.mode,
@@ -629,8 +654,15 @@ function getState() {
     modeCooldownUntil: offCooldownUntil,
     enforcement: dnsController.isEnforcing(),
     daemonInstalled: dnsController.isDaemonInstalled(),
+    daemonCurrent: dnsController.isDaemonCurrent ? dnsController.isDaemonCurrent() : true,
+    daemonInfo,
     onboardingDone: !!(readSettings().onboardingDone),
     degraded: degraded || blockState.failClosed,
+    degradedReason: degradedReason || (blockState.failClosed ? 'fail_closed' : null),
+    degradedSince: degradedSince || 0,
+    heartbeatAge: hbAge,
+    reconcileAge: reconAge,
+    daemonBusy: !!daemonBusy,
     terminalBlock: effectiveTerminalBlock(),
     dohBlock: effectiveDohBlock(),
     dohHosts: effectiveDohHosts(),
@@ -638,6 +670,7 @@ function getState() {
     proxyActive: !!(lastHeartbeat && lastHeartbeat.proxyActive),
     proxyPort: lastHeartbeat && lastHeartbeat.proxyActive ? (lastHeartbeat.proxyPort || 42792) : null,
     dnsConflict: lastHeartbeat && lastHeartbeat.dnsConflict ? lastHeartbeat.dnsConflict : null,
+    lastHeartbeat: lastHeartbeat,
     autofillBlock: effectiveAutofillBlock(),
     vmsDetected: virt.runningVirtualization(),
     settingsTampered: settingsTampered,
@@ -773,74 +806,161 @@ let lastHeartbeat = null;
 // that to avoid flagging a self-healing daemon; only a loop that stays dead
 // for a full window degrades and triggers the automatic reinstall below.
 const RECONCILE_STALE_MS = 30 * 1000;
+const INTEGRITY_FAIL_THRESHOLD = 2;
+function computeDegradedReason(hb, expected) {
+  if (!expected) return null;
+  if (!hb) return 'no_heartbeat';
+  const now = Date.now();
+  const hbAge = typeof hb.ts === 'number' ? now - hb.ts : Infinity;
+  const reconcileAge = typeof hb.lastReconcile === 'number' ? now - hb.lastReconcile : 0;
+  if (hb.dnsConflict && hb.dnsConflict.port === 53) return 'dns_conflict';
+  if (reconcileAge >= RECONCILE_STALE_MS) return 'reconcile_stale';
+  if (hbAge >= HEARTBEAT_STALE_MS) {
+    if (hb.integrityOk === false) return 'integrity_failed';
+    return 'heartbeat_stale';
+  }
+  // Fresh heartbeat but integrity failing persistently
+  if (hb.integrityOk === false && integrityFailCount >= INTEGRITY_FAIL_THRESHOLD) return 'integrity_failed';
+  if (hbAge >= HEARTBEAT_STALE_MS) return 'heartbeat_stale';
+  // Check if daemon version stale
+  try {
+    if (!dnsController.isDaemonCurrent || !dnsController.isDaemonCurrent()) return 'stale_daemon';
+  } catch {}
+  if (!hb || typeof hb.ts !== 'number') return 'no_heartbeat';
+  return null;
+}
 function checkHeartbeat() {
   const expected = blockState.mode === 'on' || blockState.failClosed;
   let hb = null;
   try { hb = JSON.parse(fs.readFileSync(HEARTBEAT_FILE, 'utf8')); } catch { /* no heartbeat yet */ }
   lastHeartbeat = hb;
+
+  // Clear stale daemonBusy (installer hung) after timeout
+  if (daemonBusy && daemonBusySince && Date.now() - daemonBusySince > DAEMON_BUSY_TIMEOUT_MS) {
+    daemonBusy = false;
+    daemonBusySince = 0;
+    logActivity(activity.makeEntry('daemon', 'recovery_failed', null, 'installer appeared stuck — cleared busy flag'));
+  }
+
+  // Track persistent integrity failures (transient read errors at boot should not degrade)
+  if (hb && hb.integrityOk === false && hb.ts && Date.now() - hb.ts < HEARTBEAT_STALE_MS) {
+    integrityFailCount += 1;
+  } else if (hb && hb.integrityOk !== false) {
+    integrityFailCount = 0;
+  }
+
   const loopOk = !hb || typeof hb.lastReconcile !== 'number' || (Date.now() - hb.lastReconcile) < RECONCILE_STALE_MS;
-  // Only require integrityOk when the heartbeat is stale — if it's fresh
-  // (within HEARTBEAT_STALE_MS) the daemon already keeps the last verified
-  // policy, so a transient integrity failure shouldn't cause immediate
-  // degradation. This prevents permanent degradation from a key file that
-  // may be momentarily unreadable at daemon startup.
-  const integrityFresh = !hb || (Date.now() - hb.ts) >= HEARTBEAT_STALE_MS || hb.integrityOk !== false;
+  const integrityFresh = !hb || (Date.now() - (hb.ts || 0)) >= HEARTBEAT_STALE_MS || hb.integrityOk !== false || integrityFailCount < INTEGRITY_FAIL_THRESHOLD;
   const fresh = !!hb && typeof hb.ts === 'number' && (Date.now() - hb.ts) < HEARTBEAT_STALE_MS && integrityFresh && loopOk;
-  // A port-53 conflict means the daemon is alive but its DNS resolver never
-  // bound, so domain blocking silently does nothing — that's degraded even
-  // though the heartbeat itself is fresh.
   const conflict = expected && !!(hb && hb.dnsConflict && hb.dnsConflict.port === 53);
   const next = expected ? (!fresh || conflict) : false;
   const was = degraded;
   const inGrace = daemonBusy || (Date.now() - STARTED_AT) < WATCHDOG_GRACE_MS;
+
+  let reason = null;
+  if (next) {
+    if (conflict) reason = 'dns_conflict';
+    else if (!hb) reason = blockState.mode === 'on' && !dnsController.isDaemonInstalled() ? 'not_installed' : 'no_heartbeat';
+    else if (!loopOk) reason = 'reconcile_stale';
+    else if (hb && hb.integrityOk === false) reason = 'integrity_failed';
+    else if (hb && typeof hb.ts === 'number' && Date.now() - hb.ts >= HEARTBEAT_STALE_MS) reason = 'heartbeat_stale';
+    else {
+      try { if (dnsController.isDaemonCurrent && !dnsController.isDaemonCurrent()) reason = 'stale_daemon'; } catch {}
+      reason = reason || 'heartbeat_stale';
+    }
+  } else if (blockState.failClosed) {
+    reason = 'fail_closed';
+  }
+
   // During the grace window a missing heartbeat is expected (install in flight
   // or daemon still booting) — don't enter degraded, but DO exit it if the
   // daemon recovers. Once the window passes, a stale heartbeat degrades.
   degraded = next ? (inGrace ? was : true) : false;
+  if (degraded) {
+    degradedReason = reason;
+    if (!degradedSince) degradedSince = Date.now();
+  } else {
+    degradedReason = blockState.failClosed ? 'fail_closed' : null;
+    degradedSince = 0;
+    if (!next) integrityFailCount = 0;
+  }
+
   if (next && !was && !inGrace) {
     if (conflict && hb && hb.dnsConflict) {
       const who = hb.dnsConflict.name ? hb.dnsConflict.name + ' (pid ' + hb.dnsConflict.pid + ')' : 'another process';
-      logActivity(activity.makeEntry('daemon', 'enforcement_degraded', null, 'port 53 conflict with ' + who));
+      logActivity(activity.makeEntry('daemon', 'enforcement_degraded', null, 'port 53 conflict with ' + who + ' (' + reason + ')'));
       notifyDegraded('Auren\u2019s DNS resolver could not start: ' + who + ' is already using port 53. Domain blocking is off until that process is stopped and protection is toggled; nothing gated by Auren will be allowed through in the meantime.');
+    } else if (reason === 'not_installed') {
+      logActivity(activity.makeEntry('daemon', 'enforcement_degraded', null, 'background service not installed'));
+      notifyDegraded('Auren\u2019s background service isn\u2019t installed. Reinstall it to restore protection; nothing gated by Auren will be allowed through until it recovers.');
+    } else if (reason === 'stale_daemon') {
+      logActivity(activity.makeEntry('daemon', 'enforcement_degraded', null, 'background service is stale — update required'));
+      notifyDegraded('Auren\u2019s background service is out of date and needs to be reinstalled. Protection is degraded until it\u2019s updated.');
     } else {
-      logActivity(activity.makeEntry('daemon', 'enforcement_degraded', null, !loopOk ? 'daemon reconcile loop stopped responding' : null));
+      const detail = !loopOk ? 'daemon reconcile loop stopped responding' : reason === 'integrity_failed' ? 'config integrity check failed' : null;
+      logActivity(activity.makeEntry('daemon', 'enforcement_degraded', null, detail));
       notifyDegraded('Auren\u2019s background service stopped responding. Protection is degraded until it recovers; nothing gated by Auren will be allowed through in the meantime.');
     }
   } else if (!next && was) {
-    logActivity(activity.makeEntry('daemon', 'enforcement_restored'));
+    logActivity(activity.makeEntry('daemon', 'enforcement_restored', null, reason ? reason : null));
+    notifyDegraded('Auren\u2019s background service has recovered — protection is active again.');
+    // Reset recovery backoff on success
+    try { fs.unlinkSync(DAEMON_RECOVERY_FLAG); } catch {}
+    recoveryAttempts = 0;
+    clearRecoveryBackoff();
   }
-  if (next !== was) pushState();
+  if (next !== was || reason !== degradedReason) pushState();
   maybeRecoverDaemon();
 }
 
-// A silent service death (launchd teardown race, crashed process) leaves the
-// label "installed" but nothing running, so the normal mode:set reinstall never
-// fires again. When the watchdog is actually degraded with protection expected,
-// try ONE automatic reinstall (bounded — no prompt loops). The OS-native prompt
-// is the same one the user already accepted when they turned protection on.
-// Persisted flag to prevent recovery loops across app launches.
+// Bounded automatic recovery with backoff. Persists flag but allows retries
+// after cooldown (so a transient failure doesn't permanently suppress recovery).
 const DAEMON_RECOVERY_FLAG = path.join(USER_DATA, '.daemon-recovery-flag');
+const RECOVERY_MAX_ATTEMPTS = 3;
+const RECOVERY_COOLDOWN_MS = 60 * 1000;
+let recoveryAttempts = 0;
+let recoveryBackoffUntil = 0;
 function hasDaemonRecoveryAttempted() {
-  try { return fs.existsSync(DAEMON_RECOVERY_FLAG); } catch { return false; }
+  try {
+    if (!fs.existsSync(DAEMON_RECOVERY_FLAG)) return false;
+    const st = fs.statSync(DAEMON_RECOVERY_FLAG);
+    const age = Date.now() - st.mtimeMs;
+    // Allow retry after cooldown
+    if (age > RECOVERY_COOLDOWN_MS && recoveryAttempts < RECOVERY_MAX_ATTEMPTS) return false;
+    return recoveryAttempts >= RECOVERY_MAX_ATTEMPTS || age <= RECOVERY_COOLDOWN_MS;
+  } catch { return false; }
 }
 function markDaemonRecoveryAttempted() {
-  try { fs.writeFileSync(DAEMON_RECOVERY_FLAG, ''); } catch { /* best-effort */ }
+  try { fs.writeFileSync(DAEMON_RECOVERY_FLAG, String(Date.now())); } catch { /* best-effort */ }
+  recoveryAttempts += 1;
+  recoveryBackoffUntil = Date.now() + RECOVERY_COOLDOWN_MS;
 }
-// label "installed" but nothing running, so the normal mode:set reinstall never
-// fires again. When the watchdog is actually degraded with protection expected,
-// try ONE automatic reinstall (bounded — no prompt loops). The OS-native prompt
-// is the same one the user already accepted when they turned protection on.
+function clearRecoveryBackoff() {
+  recoveryAttempts = 0;
+  recoveryBackoffUntil = 0;
+  try { fs.unlinkSync(DAEMON_RECOVERY_FLAG); } catch {}
+}
 function maybeRecoverDaemon() {
-  if (hasDaemonRecoveryAttempted() || !degraded) return;
+  if (!degraded) return;
   if (blockState.mode !== 'on' && !blockState.failClosed) return;
   if (daemonBusy || (Date.now() - STARTED_AT) < WATCHDOG_GRACE_MS) return;
+  if (Date.now() < recoveryBackoffUntil) return;
+  if (recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) return;
+  // Also respect persisted flag but allow retry after cooldown
+  if (hasDaemonRecoveryAttempted() && recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) return;
   markDaemonRecoveryAttempted();
-  logActivity(activity.makeEntry('daemon', 'recovery_attempted', null, 'service stopped responding; reinstalling the background service'));
+  logActivity(activity.makeEntry('daemon', 'recovery_attempted', null, 'service stopped responding; reinstalling the background service (attempt ' + recoveryAttempts + '/' + RECOVERY_MAX_ATTEMPTS + ')'));
   installDaemon().then((res) => {
     if (res.ok) {
       logActivity(activity.makeEntry('daemon', 'recovered', null, 'background service restarted'));
+      clearRecoveryBackoff();
     } else {
-      logActivity(activity.makeEntry('daemon', 'recovery_failed', null, 'automatic reinstall failed: ' + res.error));
+      const isCancel = !!res.cancelled;
+      logActivity(activity.makeEntry('daemon', 'recovery_failed', null, 'automatic reinstall failed: ' + res.error + (isCancel ? ' (cancelled)' : '')));
+      if (isCancel) {
+        // User cancelled — don't keep retrying automatically
+        recoveryAttempts = RECOVERY_MAX_ATTEMPTS;
+      }
     }
   });
 }
@@ -862,7 +982,7 @@ async function engageProtection() {
   if (quitting) return { ok: false, error: 'quitting', mode: blockState.mode };
   clearOffCooldown();
   if (!dnsController.isDaemonInstalled() || !dnsController.isDaemonCurrent()) {
-    daemonBusy = true;
+    setDaemonBusy(true);
     try {
       const res = await installDaemon();
       if (!res.ok) {
@@ -871,7 +991,7 @@ async function engageProtection() {
         return { ok: false, cancelled: !!res.cancelled, error: 'setup', mode: blockState.mode };
       }
     } finally {
-      daemonBusy = false;
+      setDaemonBusy(false);
     }
   }
   blockState.mode = 'on';
@@ -1292,6 +1412,100 @@ ipcMain.handle('sandbox:clear', () => {
   sandbox.clearEvents();
   pushState();
   return { ok: true };
+});
+
+/* ----------------------- Diagnostics & Recovery IPC ----------------------- */
+
+ipcMain.handle('diagnostics:get', () => {
+  let hb = null;
+  try { hb = JSON.parse(fs.readFileSync(HEARTBEAT_FILE, 'utf8')); } catch {}
+  let daemonInfo = null;
+  try { daemonInfo = dnsController.installedDaemonInfo ? dnsController.installedDaemonInfo() : null; } catch {}
+  let heartbeatRaw = null;
+  try { heartbeatRaw = fs.readFileSync(HEARTBEAT_FILE, 'utf8'); } catch {}
+  let daemonLogTail = '';
+  let installLogTail = '';
+  try {
+    const p = paths.daemonLogFile();
+    if (fs.existsSync(p)) {
+      const txt = fs.readFileSync(p, 'utf8');
+      const lines = txt.trim().split('\n');
+      daemonLogTail = lines.slice(-40).join('\n');
+    }
+  } catch {}
+  try {
+    const p = paths.installLogFile();
+    if (fs.existsSync(p)) {
+      const txt = fs.readFileSync(p, 'utf8');
+      const lines = txt.trim().split('\n');
+      installLogTail = lines.slice(-40).join('\n');
+    }
+  } catch {}
+  return {
+    degraded,
+    degradedReason,
+    degradedSince,
+    heartbeatAge: hb && typeof hb.ts === 'number' ? Date.now() - hb.ts : null,
+    reconcileAge: hb && typeof hb.lastReconcile === 'number' ? Date.now() - hb.lastReconcile : null,
+    lastHeartbeat: hb,
+    heartbeatRaw,
+    daemonInstalled: dnsController.isDaemonInstalled(),
+    daemonCurrent: dnsController.isDaemonCurrent ? dnsController.isDaemonCurrent() : true,
+    daemonInfo,
+    daemonBusy: !!daemonBusy,
+    recoveryAttempts,
+    recoveryBackoffUntil,
+    enforcement: dnsController.isEnforcing(),
+    configPath: CONFIG_FILE,
+    heartbeatPath: HEARTBEAT_FILE,
+    daemonLogTail,
+    installLogTail
+  };
+});
+
+ipcMain.handle('daemon:reinstall', async () => {
+  if (daemonBusy) return { ok: false, error: 'installer busy' };
+  setDaemonBusy(true);
+  clearRecoveryBackoff();
+  logActivity(activity.makeEntry('daemon', 'recovery_attempted', null, 'manual reinstall requested from degraded banner'));
+  try {
+    const res = await installDaemon();
+    if (res.ok) {
+      logActivity(activity.makeEntry('daemon', 'recovered', null, 'manual reinstall succeeded'));
+      // Give daemon a moment to write fresh heartbeat
+      setTimeout(checkHeartbeat, 1500);
+      pushState();
+      return { ok: true };
+    }
+    logActivity(activity.makeEntry('daemon', 'recovery_failed', null, 'manual reinstall failed: ' + res.error));
+    pushState();
+    return { ok: false, error: res.error, cancelled: !!res.cancelled };
+  } finally {
+    setDaemonBusy(false);
+  }
+});
+
+ipcMain.handle('daemon:clear-recovery', () => {
+  clearRecoveryBackoff();
+  pushState();
+  return { ok: true };
+});
+
+ipcMain.handle('daemon:check-ports', () => {
+  try {
+    const { execFileSync } = require('child_process');
+    if (process.platform === 'win32') {
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', 'Get-NetTCPConnection -LocalPort 53 -ErrorAction SilentlyContinue | Select-Object -First 3 | Format-List | Out-String'], { encoding: 'utf8', timeout: 4000 });
+      return { ok: true, output: String(out || '').trim() || 'No listener on 53 (free)' };
+    } else {
+      let out = '';
+      try { out += execFileSync('lsof', ['-nP', '-iTCP:53', '-sTCP:LISTEN'], { encoding: 'utf8', timeout: 3000 }); } catch (e) { out += String(e.stdout || '') || ''; }
+      try { out += '\n' + execFileSync('lsof', ['-nP', '-iUDP:53'], { encoding: 'utf8', timeout: 3000 }); } catch (e) { out += '\n' + String(e.stdout || '') || ''; }
+      return { ok: true, output: out.trim() || 'No listener on 53 (free)' };
+    }
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 /* ------------------------------- startup ----------------------------- */

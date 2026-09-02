@@ -96,6 +96,13 @@
       <div class="alert-body">
         <strong>Protection is degraded.</strong>
         <span id="degraded-text">Auren's background service isn't responding, so it can't verify that blocked sites are unreachable. Auren is failing closed — nothing it gates will be allowed through until the service recovers.</span>
+        <div id="degraded-reason" class="degraded-reason hidden"></div>
+        <div class="degraded-actions">
+          <button class="primary primary--sm" id="degraded-retry" type="button">Retry — reinstall service</button>
+          <button class="ghost" id="degraded-details" type="button">View details</button>
+          <button class="ghost hidden" id="degraded-ports" type="button">Check port 53</button>
+        </div>
+        <pre id="degraded-details-box" class="degraded-details hidden"></pre>
       </div>
     </div>
 

@@ -144,15 +144,49 @@ function render() {
 
   const degradedEl = $('degraded-banner');
   if (degradedEl) degradedEl.classList.toggle('hidden', !state.degraded);
-  if (state.degraded && state.dnsConflict) {
-    const who = state.dnsConflict.name
+  if (state.degraded) {
+    const reason = state.degradedReason || (state.dnsConflict ? 'dns_conflict' : 'heartbeat_stale');
+    const who = state.dnsConflict && state.dnsConflict.name
       ? state.dnsConflict.name + ' (pid ' + state.dnsConflict.pid + ')'
-      : 'another process';
+      : null;
     const txt = $('degraded-text');
-    if (txt) txt.textContent = 'Auren\u2019s DNS resolver could not start: ' + who + ' is already using port 53. Domain blocking is off until that process is stopped and protection is toggled. Auren is failing closed \u2014 nothing it gates will be allowed through in the meantime.';
+    if (txt) {
+      if (reason === 'dns_conflict' && who) {
+        txt.textContent = 'Auren\u2019s DNS resolver could not start: ' + who + ' is already using port 53. Domain blocking is off until that process is stopped and protection is toggled. Auren is failing closed \u2014 nothing it gates will be allowed through in the meantime.';
+      } else if (reason === 'not_installed') {
+        txt.textContent = 'Auren\u2019s background service isn\u2019t installed. Reinstall it to restore protection. Auren is failing closed — nothing it gates will be allowed through in the meantime.';
+      } else if (reason === 'stale_daemon') {
+        txt.textContent = 'Auren\u2019s background service is out of date. Reinstall it to restore protection. Auren is failing closed — nothing it gates will be allowed through until it updates.';
+      } else if (reason === 'integrity_failed') {
+        txt.textContent = 'Auren detected a config integrity issue — the background service is keeping the last verified policy. Restart protection or reinstall the service to recover.';
+      } else if (reason === 'reconcile_stale') {
+        txt.textContent = 'Auren\u2019s background service is running but its enforcement loop stopped responding. Auren is failing closed — nothing it gates will be allowed through until it recovers.';
+      } else if (reason === 'fail_closed') {
+        txt.textContent = 'Auren\u2019s encrypted store could not be verified and has failed closed. Review Recent activity for details.';
+      } else {
+        txt.textContent = 'Auren\u2019s background service isn\u2019t responding, so it can\u2019t verify that blocked sites are unreachable. Auren is failing closed — nothing it gates will be allowed through until the service recovers.';
+      }
+    }
+    const reasonEl = $('degraded-reason');
+    if (reasonEl) {
+      const hbAge = typeof state.heartbeatAge === 'number' ? Math.round(state.heartbeatAge / 1000) + 's ago' : 'no heartbeat';
+      const reconAge = typeof state.reconcileAge === 'number' ? Math.round(state.reconcileAge / 1000) + 's ago' : '—';
+      const installed = state.daemonInstalled ? 'installed' : 'not installed';
+      const current = state.daemonCurrent === false ? 'stale' : state.daemonCurrent ? 'current' : 'unknown';
+      const lastHb = state.lastHeartbeat ? 'v' + (state.lastHeartbeat.version || '?') + ' hb ' + hbAge : 'no heartbeat';
+      reasonEl.textContent = 'Reason: ' + reason + ' · daemon ' + installed + ' (' + current + ') · ' + lastHb + ' · reconcile ' + reconAge;
+      if (state.daemonBusy) reasonEl.textContent += ' · reinstalling…';
+      reasonEl.classList.remove('hidden');
+    }
+    const portsBtn = $('degraded-ports');
+    if (portsBtn) portsBtn.classList.toggle('hidden', reason !== 'dns_conflict' && reason !== 'heartbeat_stale');
+    const retryBtn = $('degraded-retry');
+    if (retryBtn) retryBtn.disabled = !!state.daemonBusy || busy;
   } else {
-    const txt = $('degraded-text');
-    if (txt) txt.textContent = 'Auren\u2019s background service isn\u2019t responding, so it can\u2019t verify that blocked sites are unreachable. Auren is failing closed \u2014 nothing it gates will be allowed through until the service recovers.';
+    const reasonEl = $('degraded-reason');
+    if (reasonEl) reasonEl.classList.add('hidden');
+    const detailsBox = $('degraded-details-box');
+    if (detailsBox) detailsBox.classList.add('hidden');
   }
 
   const autoProtect = state.autoProtect || { enabled: true, engagedBy: [] };
@@ -581,6 +615,84 @@ async function init() {
       apIgnore.classList.add('hidden');
       const note = $('autoprotect-ignore-note');
       if (note) note.textContent = tool + ' is ignored \u2014 it won\u2019t auto-engage protection again.';
+    });
+  }
+
+  // Degraded banner actions
+  const degradedRetry = $('degraded-retry');
+  if (degradedRetry) {
+    degradedRetry.addEventListener('click', async () => {
+      if (busy || state.daemonBusy) return;
+      busy = true;
+      degradedRetry.textContent = 'Reinstalling…';
+      degradedRetry.disabled = true;
+      render();
+      try {
+        const r = await api.reinstallDaemon();
+        if (!r.ok) {
+          showError('mode-error', r.cancelled ? 'Reinstall cancelled. Protection stays degraded.' : 'Reinstall failed: ' + (r.error || 'unknown error'));
+        } else {
+          const errEl = $('mode-error');
+          if (errEl) errEl.classList.add('hidden');
+        }
+      } catch (err) {
+        showError('mode-error', 'Reinstall error: ' + err.message);
+      } finally {
+        busy = false;
+        degradedRetry.textContent = 'Retry — reinstall service';
+        degradedRetry.disabled = false;
+        render();
+      }
+    });
+  }
+  const degradedDetailsBtn = $('degraded-details');
+  const degradedDetailsBox = $('degraded-details-box');
+  if (degradedDetailsBtn && degradedDetailsBox) {
+    degradedDetailsBtn.addEventListener('click', async () => {
+      const visible = !degradedDetailsBox.classList.contains('hidden');
+      if (visible) {
+        degradedDetailsBox.classList.add('hidden');
+        degradedDetailsBtn.textContent = 'View details';
+        return;
+      }
+      degradedDetailsBtn.textContent = 'Loading…';
+      try {
+        const d = await api.getDiagnostics();
+        const lines = [];
+        lines.push('degraded: ' + d.degraded + ' (' + (d.degradedReason || '—') + ') since ' + (d.degradedSince ? new Date(d.degradedSince).toLocaleTimeString() : '—'));
+        lines.push('daemon: ' + (d.daemonInstalled ? 'installed' : 'not installed') + ' · ' + (d.daemonCurrent ? 'current' : 'stale') + ' · busy=' + d.daemonBusy);
+        if (d.daemonInfo) lines.push('daemonInfo: ' + JSON.stringify(d.daemonInfo));
+        lines.push('heartbeat: ' + (d.lastHeartbeat ? JSON.stringify(d.lastHeartbeat) : 'none'));
+        lines.push('enforcement: ' + d.enforcement + ' · heartbeatPath: ' + d.heartbeatPath);
+        if (d.daemonLogTail) lines.push('\n— daemon.log tail —\n' + d.daemonLogTail);
+        if (d.installLogTail) lines.push('\n— install.log tail —\n' + d.installLogTail);
+        degradedDetailsBox.textContent = lines.join('\n');
+        degradedDetailsBox.classList.remove('hidden');
+        degradedDetailsBtn.textContent = 'Hide details';
+      } catch (err) {
+        degradedDetailsBox.textContent = 'Could not load diagnostics: ' + err.message;
+        degradedDetailsBox.classList.remove('hidden');
+        degradedDetailsBtn.textContent = 'Hide details';
+      }
+    });
+  }
+  const degradedPortsBtn = $('degraded-ports');
+  if (degradedPortsBtn && degradedDetailsBox) {
+    degradedPortsBtn.addEventListener('click', async () => {
+      degradedPortsBtn.textContent = 'Checking…';
+      try {
+        const r = await api.checkPorts();
+        const out = r.ok ? r.output : 'Error: ' + r.error;
+        degradedDetailsBox.textContent = 'Port 53 check:\n' + out + '\n\nIf another process owns 53, stop it (e.g. AdGuard, dnsmasq, VPN resolver) then click Retry. Or run: sudo bash scripts/check-ports.sh';
+        degradedDetailsBox.classList.remove('hidden');
+        const btn = $('degraded-details');
+        if (btn) btn.textContent = 'Hide details';
+      } catch (err) {
+        degradedDetailsBox.textContent = 'Port check failed: ' + err.message;
+        degradedDetailsBox.classList.remove('hidden');
+      } finally {
+        degradedPortsBtn.textContent = 'Check port 53';
+      }
     });
   }
 

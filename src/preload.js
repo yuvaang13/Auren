@@ -33,6 +33,11 @@ contextBridge.exposeInMainWorld('auren', {
   getSandbox: () => ipcRenderer.invoke('sandbox:get'),
   getSandboxEvents: (limit) => ipcRenderer.invoke('sandbox:events', limit),
   clearSandboxEvents: () => ipcRenderer.invoke('sandbox:clear'),
+  // — Diagnostics & Recovery —
+  getDiagnostics: () => ipcRenderer.invoke('diagnostics:get'),
+  reinstallDaemon: () => ipcRenderer.invoke('daemon:reinstall'),
+  clearRecovery: () => ipcRenderer.invoke('daemon:clear-recovery'),
+  checkPorts: () => ipcRenderer.invoke('daemon:check-ports'),
   onChange: (cb) => ipcRenderer.on('state', (_event, state) => cb(state)),
   onAutoProtectPrompt: (cb) => ipcRenderer.on('autoprotect:prompt', (_event, tools) => cb(tools))
 });
