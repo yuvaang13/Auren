@@ -878,7 +878,6 @@ button.primary:hover .btn-arrow { transform: translateX(2px); }
   border-radius: 12px;
   margin-bottom: 8px;
   transition: all 0.2s var(--ease-premium);
-  animation: rise 0.28s var(--ease-premium) both;
   position: relative;
 }
 .block-item::before {
@@ -929,7 +928,6 @@ button.primary:hover .btn-arrow { transform: translateX(2px); }
   margin-bottom: 6px;
   background: rgba(255,255,255,0.02);
   border: 1px solid rgba(255,255,255,0.035);
-  animation: rise 0.28s ease both;
   transition: background 0.18s ease, border-color 0.18s ease;
 }
 .activity-item:hover { background: rgba(255,255,255,0.035); border-color: rgba(255,255,255,0.06); }
