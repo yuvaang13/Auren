@@ -32,11 +32,23 @@ const path = require('path');
 /**
  * Expand a leading `~` or `~/` to the user's home directory.
  * Returns the original string if no expansion applies.
+ * Platform-aware so that `lexicalNormalize('~/a', 'posix')` on a Windows host
+ * (used in unit tests) uses the same separator semantics as the requested platform.
  */
-function expandTilde(p) {
+function expandTilde(p, platform) {
   if (!p) return p;
+  const isWin = (platform || process.platform) === 'win32';
+  const mod = isWin ? path.win32 : path.posix;
   if (p === '~') return os.homedir();
-  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
+  if (p.startsWith('~/') || p.startsWith('~\\')) {
+    // Use the platform's join so tests that force 'posix' on Windows still get
+    // a deterministic result. On Windows the homedir is a win32 path; when the
+    // caller forces posix we convert separators so posix.resolve sees a sensible
+    // absolute path.
+    let home = os.homedir();
+    if (!isWin) home = home.replace(/\\/g, '/');
+    return mod.join(home, p.slice(2));
+  }
   return p;
 }
 
@@ -60,7 +72,7 @@ function lexicalNormalize(input, platform) {
   // Reject null bytes (common injection vector)
   if (p.includes('\0')) return null;
 
-  p = expandTilde(p);
+  p = expandTilde(p, platform);
 
   const isWin = (platform || process.platform) === 'win32';
   const mod = isWin ? path.win32 : path.posix;
@@ -79,16 +91,25 @@ function lexicalNormalize(input, platform) {
     // Normalize drive letter: C: -> C:
     abs = abs.replace(/^([a-z]):/, (_, d) => d.toUpperCase() + ':');
   } else {
-    abs = path.posix.isAbsolute(p) ? path.posix.resolve(p) : path.resolve(p);
-    // path.resolve on POSIX already uses OS cwd; mirror with POSIX semantics
-    // for deterministic tests we use posix.resolve
-    // Actually Node's path.resolve is OS-dependent; for POSIX branch we
-    // re-do with posix if not on win32 host.
-    if (process.platform !== 'win32') {
-      // already correct — path.resolve is POSIX on this host
+    // POSIX branch: use posix semantics even when the host is Windows (tests
+    // force platform='posix'). path.posix.resolve handles both absolute and
+    // relative inputs deterministically against the posix cwd.
+    if (process.platform === 'win32') {
+      // When forcing posix on a Windows host, the cwd is a win32 path like
+      // `C:\Users\runneradmin`. Convert it to posix form so posix.resolve does
+      // not treat it as a relative segment and produce `/a/.../C:\...`.
+      // If p is a Windows drive-absolute path (e.g. `C:/Users/...` after tilde
+      // expansion), treat it as already absolute for posix and just normalize
+      // instead of resolving against the cwd — otherwise we'd get
+      // `D:/a/.../C:/...` which is not meaningful but would break assertions.
+      if (/^[a-zA-Z]:[\\/]/.test(p)) {
+        abs = mod.normalize(p);
+      } else {
+        const posixCwd = process.cwd().replace(/\\/g, '/');
+        abs = mod.isAbsolute(p) ? mod.resolve(p) : mod.resolve(posixCwd, p);
+      }
     } else {
-      // Testing POSIX on Windows host: use posix.resolve with a fake cwd '/'
-      // but we already did win32 branch above, so this path is not taken.
+      abs = mod.isAbsolute(p) ? mod.resolve(p) : mod.resolve(p);
     }
   }
 
