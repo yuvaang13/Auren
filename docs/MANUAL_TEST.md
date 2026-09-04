@@ -87,10 +87,10 @@ Resolve-DnsName -Server 127.0.0.1 example.com        # -> resolves to an A recor
       ID, the standard password prompt). **(win)** Windows Hello
       (UserConsentVerifier) shows the sign-in prompt, falling back to a UAC
       elevation prompt when Hello isn't configured. Complete it.
-- [ ] The toggle stays ON but disabled for **10 seconds** and the status reads
+- [ ] The toggle stays ON but disabled for **5 seconds** and the status reads
       something like "Verified. Protection stays ON … sites will unlock in Ns."
 - [ ] While the countdown runs, a blocked site is still unreachable.
-- [ ] After ~10 seconds the toggle flips OFF on its own and the status reads
+- [ ] After ~5 seconds the toggle flips OFF on its own and the status reads
       "Protection is OFF"; the sites are now reachable.
 - [ ] Flip OFF again but **cancel** the prompt. Protection stays ON and the
       activity log shows the request was cancelled.
@@ -140,7 +140,7 @@ Paths are `~/Library/Application Support/Auren/` **(mac)** or
       turn-off — the daemon restores normal DNS and clears the pf anchor
       within ~1 second (`dig` resolves, `ping` works again).
 - [ ] With Protection OFF, Cmd+Q quits with **no** prompt.
-- [ ] With Protection ON, within the 10-second unlock cooldown (right after a
+- [ ] With Protection ON, within the 5-second unlock cooldown (right after a
       verified turn-off), Cmd+Q quits with **no** re-prompt.
 - [ ] Force-quit (Activity Monitor / `kill -9`): the app dies with no prompt
       and protection stays ON — the daemon keeps blocking (`dig` → NXDOMAIN,
@@ -298,6 +298,19 @@ Manual checks:
 - [ ] The bridge exposes no write surface: `POST /v1/check/command` to
       `mode:set`-style routes returns `404`, and there is no route that edits
       the block list.
+
+## 5.12 File System Guard & Virtual Isolation (default-deny)
+
+> See `docs/FILESYSTEM_GUARD.md` for the full threat model. The guard is **canonical-first, default-deny**: every path is `canonicalize()` (lexical + `realpath` ancestor walk) before `isAccessAllowed()` — symlink escapes and `../` traversals are collapsed. Forced exclusions are never removable.
+
+- [ ] **No mounts → deny-all:** with zero mounts, `POST /v1/check/fs {"path":"/tmp/a.txt"}` (via bridge token `~/Library/Application Support/Auren/bridge.token` / `%APPDATA%\Auren\bridge.token`) returns `{ allowed:false, reason:"no mounts"` }. UI shows `0 mounts` and `sandbox:events` is empty.
+- [ ] **Add workspace:** Tab **File System Guard** → **Choose folder…** → pick a real directory (e.g. `~/auren-test-ws` or `%USERPROFILE%\auren-test-ws`). It appears in the mounts list with basename + path; `bridge.token` check `POST /v1/check/fs {"path":"<ws>/file.txt"}` → `allowed:true`. Try `cat <ws>/file.txt` inside the ws — allowed.
+- [ ] **Forced exclusions even inside mount:** `POST /v1/check/fs {"path":"<ws>/.env"}` → `allowed:false, rule:"basename:.env"` plus `POST … "/.env.local"` / `"<ws>/sub/.ssh/id_rsa"` / `"<ws>/key.pem"` all deny despite being inside the mount. Live path sanitizer tester in the tab shows `Blocked — .env` / `.ssh` / `*.pem` with canonical path displayed.
+- [ ] **Traversal blocked:** `POST … {"path":"<ws>/../.env"}` and `"<ws>/../<ws>/.ssh/id_rsa"` → `allowed:false` (collapsed outside mount or forced exclusion). The tester shows `workspace/../.env` collapsed before check.
+- [ ] **Symlink escape blocked:** `ln -s /etc <ws>/link-to-etc` **(mac)** / `mklink /D <ws>\link-to-etc C:\Windows\System32` **(win)** then `POST … {"path":"<ws>/link-to-etc/passwd"}` → `allowed:false` (canonical escapes mount → outside). Same for file symlink `ln -s ~/.ssh/id_rsa <ws>/badlink`.
+- [ ] **Windows case-insensitive mount:** on Win, `POST … {"path":"c:\\users\\me\\ws\\FILE.TXT"}` where mount is `C:\Users\Me\ws` → `allowed:true` (see `test/fsguard.test.js:148` case).
+- [ ] **Ephemeral events, never leak:** denied reads appear in **Runtime & Sandbox → Blocked system calls — live** (max 200 ring) and in `activity.jsonl` throttled entry, but only `basename` + `reason` — never file contents or full secret paths. Quit the app → ring is empty (in-memory only).
+- [ ] **Remove mount → deny again:** remove the ws mount in UI; `POST … {"path":"<ws>/file.txt"}` now `allowed:false, reason:"no mounts"` / `outside allowed mounts`.
 
 ## 6. Protection survives app restart
 

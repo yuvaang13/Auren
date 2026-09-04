@@ -9,7 +9,7 @@ This policy covers defects that undermine the guarantees it *does* claim:
   OS-native biometric/passcode check (macOS Touch ID / passcode; Windows Hello
   via UserConsentVerifier, with a UAC elevation prompt as the fallback); a
   failed or cancelled check leaves protection ON, and the unlock itself waits
-  out a 10-second cooldown.
+  out a 5-second cooldown.
   Quitting the app while Protection is ON (or fail-closed) is gated the same
   way: quitting would lift protection, so it requires the same OS-native
   check; a failed or cancelled check cancels the quit and protection stays

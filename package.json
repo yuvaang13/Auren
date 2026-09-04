@@ -17,7 +17,7 @@
     "test:proxy": "node test/proxy.test.js",
     "test:autoprotect": "node test/autoprotect.test.js && node test/agenttrack.test.js",
     "test:fsguard": "node test/fsguard.test.js",
-    "test:all": "npm run test:unit && npm run test:classifier && npm run test:bridge && npm run test:dns && npm run test:proxy && npm run test:fsguard",
+    "test:all": "npm run test:unit && npm run test:classifier && npm run test:bridge && npm run test:dns && npm run test:proxy && npm run test:fsguard && npm run test:autoprotect",
     "demo:bridge": "node scripts/demo-agent-bridge.mjs",
     "e2e:check": "bash scripts/e2e-check.sh",
     "e2e:check:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\e2e-check.ps1",
