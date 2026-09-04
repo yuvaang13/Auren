@@ -151,6 +151,10 @@ function isForcedExcluded(canonicalPath, platform) {
       return { excluded: true, reason: `blocked sensitive directory: ${seg}`, rule: 'dir:' + seg };
     }
   }
+  // Note: FORCED_BROWSER_DIRS (chrome, firefox, etc.) is intentionally NOT
+  // segment-blocked — a project named "chrome" would otherwise be denied.
+  // Browser data stores are already covered by FORCED_BROWSER_FILES +
+  // substring checks, which is sufficient and less prone to false positives.
 
   // 5. Browser file exact match (inside any browser profile dir, but we block
   //    globally to be safe — these files never need to be exposed to an agent)
@@ -159,13 +163,13 @@ function isForcedExcluded(canonicalPath, platform) {
   }
 
   // 6. Substring patterns (low-cost, case-insensitive)
+  // FIX: previously checked basename-only, so `/keychain/file.txt` or
+  // `/a/credentials/config.json` inside a sensitive dir slipped through when
+  // the basename was generic (file.txt). Now check any path segment.
   for (const sub of FORCED_SUBSTRINGS) {
-    if (lowerFull.includes(sub.toLowerCase())) {
-      // Avoid false positives on benign files that contain 'history' as substring
-      // e.g., 'my-history-notes.txt' — only block when basename contains it
-      // and extension suggests a data store. For now we block strictly on
-      // substring in basename to keep precision higher.
-      if (lowerBase.includes(sub.toLowerCase())) {
+    const lowSub = sub.toLowerCase();
+    if (lowerFull.includes(lowSub)) {
+      if (segments.some(s => s.includes(lowSub))) {
         return { excluded: true, reason: `blocked sensitive pattern: ${sub}`, rule: 'substr:' + sub };
       }
     }

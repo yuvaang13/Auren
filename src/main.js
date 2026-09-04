@@ -426,6 +426,15 @@ async function startAgentBridge() {
         checkCommand: (cmd) => agentgate.inspectCommand(cmd, agentGateCtx()),
         checkFs: (payload) => {
           const p = payload && payload.path ? payload.path : String(payload || '');
+          // Fail-closed when degraded, and disabled when protection is OFF
+          // (otherwise default-deny with 0 mounts would block everything while OFF).
+          if (degraded || blockState.failClosed) {
+            return { allowed: false, canonical: null, reason: 'enforcement degraded — default deny', rule: 'degraded' };
+          }
+          if (blockState.mode !== 'on') {
+            const c = canonicalize(p);
+            return { allowed: true, canonical: c.ok ? c.canonical : null, reason: 'protection off — file guard disabled' };
+          }
           return fsguard.isAccessAllowed(p, blockState.fsGuard);
         },
         isBlocked: (domain) => agentgate.isBlocked(domain, agentGateCtx())
@@ -1356,8 +1365,9 @@ ipcMain.handle('fsguard:remove', (_e, id) => {
 
 // Agent-side FS gate: any agent read/write must call this BEFORE touching disk.
 // Canonicalizes the path, checks forced exclusions, then mount containment.
-// Fail-closed: while degraded or outside mounts => denied. Event is logged to the
-// ephemeral sandbox ring buffer, never to disk.
+// Fail-closed: while degraded or outside mounts => denied. Disabled when
+// Protection is OFF (otherwise 0 mounts would block everything while off).
+// Event is logged to the ephemeral sandbox ring buffer, never to disk.
 ipcMain.handle('fsguard:check', (_e, payload) => {
   const p = payload && payload.path ? payload.path : String(payload || '');
   const op = payload && payload.op ? String(payload.op) : 'read';
@@ -1368,6 +1378,11 @@ ipcMain.handle('fsguard:check', (_e, payload) => {
     logActivity(activity.makeEntry('command', 'blocked', null, 'fs ' + op + ' blocked (degraded): ' + path.basename(p)));
     pushState();
     return { allowed: false, reason: 'enforcement degraded', canonical: null };
+  }
+  // Protection OFF => file guard disabled (allow all, no sandbox event)
+  if (blockState.mode !== 'on') {
+    const c = canonicalize(p);
+    return { allowed: true, canonical: c.ok ? c.canonical : null, reason: 'protection off — file guard disabled' };
   }
   const res = fsguard.isAccessAllowed(p, blockState.fsGuard);
   if (!res.allowed) {
