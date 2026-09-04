@@ -102,10 +102,11 @@ and kill.
 
 ## Reporting
 
-Please report suspected issues privately before disclosing publicly. If this
-project is published with a maintainer contact, that contact is the reporting
-channel; until then, open an issue that omits any sensitive detail and ask for
-a private channel.
+Please report suspected issues privately before disclosing publicly.
+
+**Contact:** `security@auren.app` (monitored, beta). GitHub **Security Advisories** are enabled on this repo — prefer `Report a vulnerability` → private advisory.
+
+If email is unavailable, open a minimal public issue that omits sensitive detail and ask for a private channel.
 
 Please include: affected version/commit, steps to reproduce, expected vs
 actual behavior, and whether it involves biometric/credential data or the

@@ -28,3 +28,10 @@ jobs:
 
       - name: Run the full test suite
         run: npm run test:all
+
+      - name: Audit production dependencies (moderate+)
+        run: npm audit --production --audit-level=moderate
+
+      - name: Dry-run packaging (no sign/publish, just buildability)
+        run: npx electron-builder --dir --publish never
+        if: runner.os != 'Windows'

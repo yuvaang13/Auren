@@ -1,4 +1,6 @@
-# Auren — AI Agent Guardrail
+# Auren — AI Agent Guardrail · Public Beta
+
+> **Public Beta (v0.4.0)** — Local desktop app. Builds in `release/` are currently **unsigned** (see [`docs/INSTALL_UNSIGNED.md`](docs/INSTALL_UNSIGNED.md) for the Gatekeeper / SmartScreen steps) and have no auto-updater yet. See [`CHANGELOG.md`](CHANGELOG.md).
 
 A desktop app that protects your whole computer from AI-agent overreach.
 Flip **Protection Mode** on and Auren blocks the websites, apps, and

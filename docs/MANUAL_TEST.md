@@ -7,7 +7,7 @@ OS-native prompts and the real network behavior. macOS-specific commands are
 marked **(mac)** and Windows equivalents **(win)**; unmarked items apply to
 both.
 
-Prerequisites: `npm install`, then start the app.
+Prerequisites: `npm install`, then start the app. For **Public Beta unsigned builds** see `docs/INSTALL_UNSIGNED.md` (Right-click → Open / SmartScreen `More info → Run anyway`).
 
 ## 1. Onboarding
 
@@ -101,6 +101,8 @@ Resolve-DnsName -Server 127.0.0.1 example.com        # -> resolves to an A recor
       or biometric data anywhere in that file.
 
 ## 5.5 Storage integrity (encrypted store + signatures)
+
+> **Permissions note:** `0600` tightening via `src/core/store.js:42` → `ensurePermissions` is enforced on macOS/Linux. On Windows the ACL model scopes `%APPDATA%` to the user, so the `0600` check is a no-op — skip that line on Win.
 
 Paths are `~/Library/Application Support/Auren/` **(mac)** or
 `%APPDATA%\Auren\` + `%PROGRAMDATA%\Auren\` **(win)**.

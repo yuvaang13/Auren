@@ -15,5 +15,10 @@ test/.artifacts/
 # Local runtime state (created by the app / daemon at runtime)
 *.tmp
 
+# Large demo/media assets — host externally or track with Git LFS, do not commit binaries
+*.mov
+*.mp4
+*.pdf
+!docs/*.pdf
 # Packaged output
 release/
