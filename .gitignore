@@ -22,3 +22,6 @@ test/.artifacts/
 !docs/*.pdf
 # Packaged output
 release/
+
+# Website lives in its own repo (yuvaang13/auren-web), nested under ./website
+website/
