@@ -397,6 +397,7 @@ function agentGateCtx() {
     sensitiveRules: policyRulesFromSettings(),
     commandRules: commandPolicyFromSettings(),
     blocklist: blockState.blocklist,
+    fsGuard: blockState.fsGuard,
     authFn: (reason) => requireNativeAuth(reason),
     logFn: logActivity,
     notifyFn: pushState

