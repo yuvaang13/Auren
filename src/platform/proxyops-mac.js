@@ -12,7 +12,8 @@ const { spawnSync } = require('child_process');
 const dnsops = require('./dnsops-mac');
 
 function run(args) {
-  const r = spawnSync('/usr/sbin/networksetup', args, { encoding: 'utf8' });
+  // Same hang risk as dnsops-mac: networksetup serializes on system config.
+  const r = spawnSync('/usr/sbin/networksetup', args, { encoding: 'utf8', timeout: 5000 });
   return { status: r.status, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim() };
 }
 

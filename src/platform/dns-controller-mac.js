@@ -38,7 +38,9 @@ function isDaemonInstalled() {
 function installedDaemonInfo() {
   if (!fs.existsSync(PLIST)) return null;
   try {
-    const out = execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', PLIST], { encoding: 'utf8' });
+    // getState() calls this on every UI poll — never let a wedged plutil
+    // stall the app.
+    const out = execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', PLIST], { encoding: 'utf8', timeout: 8000 });
     const parsed = JSON.parse(out);
     const env = (parsed && parsed.EnvironmentVariables) || {};
     const args = Array.isArray(parsed && parsed.ProgramArguments) ? parsed.ProgramArguments : [];
@@ -76,7 +78,7 @@ function shellQuote(s) {
 
 function findNodeBin(exePath) {
   try {
-    const node = execFileSync('/usr/bin/which', ['node'], { encoding: 'utf8' }).trim();
+    const node = execFileSync('/usr/bin/which', ['node'], { encoding: 'utf8', timeout: 5000 }).trim();
     if (node) return node;
   } catch { /* fall through */ }
   // Fall back to running Electron itself in node mode (ELECTRON_RUN_AS_NODE).

@@ -9,7 +9,10 @@
 const { spawnSync } = require('child_process');
 
 function run(args) {
-  const r = spawnSync('/usr/sbin/networksetup', args, { encoding: 'utf8' });
+  // networksetup can hang (it serializes on system configuration); never let
+  // it wedge the daemon's reconcile loop — the 15s hard-reset + 30s degraded
+  // window in daemon.js must stay a backstop, not the normal path.
+  const r = spawnSync('/usr/sbin/networksetup', args, { encoding: 'utf8', timeout: 5000 });
   return { status: r.status, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim() };
 }
 
@@ -47,7 +50,7 @@ function discoverUpstream(stateServices, fallback) {
   }
   if (fromState.length) return fromState;
 
-  const r = spawnSync('/usr/sbin/scutil', ['--dns'], { encoding: 'utf8' });
+  const r = spawnSync('/usr/sbin/scutil', ['--dns'], { encoding: 'utf8', timeout: 5000 });
   const found = [];
   if (r.status === 0 && r.stdout) {
     for (const line of r.stdout.split('\n')) {
@@ -64,7 +67,7 @@ function discoverUpstream(stateServices, fallback) {
 
 // True when every visible resolver is a loopback address (protection on).
 function isEnforcing() {
-  const r = spawnSync('/usr/sbin/scutil', ['--dns'], { encoding: 'utf8' });
+  const r = spawnSync('/usr/sbin/scutil', ['--dns'], { encoding: 'utf8', timeout: 5000 });
   if (r.status !== 0) return false;
   let saw = 0;
   let allLoopback = true;
@@ -96,7 +99,7 @@ function parseLsofPcn(text) {
 // Identify the process listening on a TCP port, used to name a port-53
 // conflict when our resolver can't bind. Returns { pid, name } or null.
 function portOwner(port) {
-  const r = spawnSync('/usr/sbin/lsof', ['-nP', '-iTCP:' + port, '-sTCP:LISTEN', '-F', 'pcn'], { encoding: 'utf8' });
+  const r = spawnSync('/usr/sbin/lsof', ['-nP', '-iTCP:' + port, '-sTCP:LISTEN', '-F', 'pcn'], { encoding: 'utf8', timeout: 5000 });
   if (r.status !== 0 || !r.stdout) return null;
   return parseLsofPcn(r.stdout);
 }

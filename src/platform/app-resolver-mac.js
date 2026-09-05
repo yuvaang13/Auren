@@ -17,7 +17,7 @@ const { execFileSync } = require('child_process');
 // any failure — a bundle with a broken plist simply won't be offered.
 function plistValue(plistPath, key) {
   try {
-    const out = execFileSync('/usr/bin/plutil', ['-extract', key, 'raw', '-o', '-', plistPath], { encoding: 'utf8' });
+    const out = execFileSync('/usr/bin/plutil', ['-extract', key, 'raw', '-o', '-', plistPath], { encoding: 'utf8', timeout: 8000 });
     return String(out || '').trim();
   } catch {
     return null;

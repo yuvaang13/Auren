@@ -393,7 +393,7 @@
           <div class="tab-head">
             <div>
               <h2>File System Guard <span class="beta-badge">Key Feature</span></h2>
-              <p>Local file-system isolation. Default-deny — agents only see folders you explicitly mount. Sensitive files are always denied.</p>
+              <p>Local file-system isolation for AI agents. Default-deny — agents routed through Auren only see folders you explicitly mount. Sensitive files are always denied. This does not lock Finder / File Explorer itself — it gates agent file access (bridge, terminal gate, and path checks).</p>
             </div>
             <span class="privacy-chip">Zero-knowledge</span>
           </div>
@@ -404,7 +404,7 @@
             </div>
             <div class="fs-hero-text">
               <strong>Default-deny Virtual Mounts</strong>
-              <span>The agent starts with <em>zero</em> file access. Add one or more workspace directories below — only those folders are visible. Everything else is refused before the read happens. Mounts are stored locally in the encrypted store and — on macOS — as Security-Scoped Bookmarks.</span>
+              <span>The agent starts with <em>zero</em> file access. Add one or more workspace directories below — only those folders are allowed through Auren's agent gates (bridge <code>/v1/check/fs</code>, terminal-command gate, and path checks). Everything else is refused before the read happens. Opening other folders directly in Finder / Explorer still works — those never pass through Auren. Mounts are stored locally in the encrypted store and — on macOS — as Security-Scoped Bookmarks.</span>
             </div>
             <span class="control-pill on">enforce</span>
           </div>

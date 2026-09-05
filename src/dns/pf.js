@@ -270,7 +270,9 @@ function parsePfRuleStats(text) {
 // The pfctl binary is injectable (AUREN_PFCTL) so the test suite can exercise
 // the anchor load/clear flow with a fake binary instead of requiring root.
 function pfctl(args) {
-  return spawnSync(process.env.AUREN_PFCTL || PFCTL, args, { encoding: 'utf8' });
+  // pfctl talks to the kernel; a wedged pf would otherwise stall the whole
+  // reconcile loop until the 15s hard-reset. Fail fast instead.
+  return spawnSync(process.env.AUREN_PFCTL || PFCTL, args, { encoding: 'utf8', timeout: 5000 });
 }
 
 // Per-rule counters for the auren anchor (see parsePfRuleStats).

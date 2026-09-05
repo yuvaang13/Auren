@@ -6,6 +6,7 @@
 
 - **ZERO-KNOWLEDGE:** 100% local. No path, mount, or exclusion ever leaves the machine. No telemetry, no remote DB.
 - **Default-Deny:** Agent runtime starts with **zero** file-system access. Access is granted only to explicit Virtual Mount Points chosen by the user in Tab 3, minus the forced exclusion list.
+- **Scope:** this gates *AI-agent file access routed through Auren* — the loopback bridge (`POST /v1/check/fs`, `/v1/check/command`), the Electron IPC gates (`fsguard:check`, `agent:inspect-command`), and the live path tester. It is **not** OS-level mandatory access control: opening other folders directly in Finder / File Explorer still works, because those opens never pass through Auren.
 - **Canonical-first:** Every path is canonicalized (symlink + lexical resolution) before any decision.
 - **Encrypted at rest:** Policy lives in the OS-standard app-data directory (`~/Library/Application Support/Auren` on macOS, `%APPDATA%/Auren` on Windows) inside the existing encrypted store `guardrail.dat` (AES-256-GCM, key `auren.key`, mode 0600) and the HMAC-signed `config.json`.
 

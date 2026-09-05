@@ -68,7 +68,9 @@ function flushDnsCache(opts) {
   const errors = [];
   for (const [cmd, args] of FLUSH_COMMANDS) {
     try {
-      run(cmd, args, { stdio: 'ignore' });
+      // Daemon path uses the async variant; still bound the sync CLI/tests path
+      // so killall can never hang the caller.
+      run(cmd, args, { stdio: 'ignore', timeout: 8000 });
     } catch (err) {
       errors.push(describeError(cmd, err));
     }

@@ -39,23 +39,27 @@ function parseList(stdout) {
 // Blocking snapshot for cached, occasional callers only — never the daemon's
 // hot path (see header note).
 function listSync() {
-  const r = spawnSync('/bin/ps', PS_ARGS, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+  const r = spawnSync('/bin/ps', PS_ARGS, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 8000 });
   if (r.status !== 0) return null;
   return parseList(r.stdout);
 }
 
 // [{ pid, ppid, exe, tokens }, ...] or null when ps itself fails. Never blocks
-// the event loop.
+// the event loop. A hung ps/kill child is killed after 8s so the daemon's
+// reconcile loop (and its 15s hard-reset) can never wedge on it.
 function list() {
   return new Promise((resolve) => {
     const child = spawn('/bin/ps', PS_ARGS, { stdio: ['ignore', 'pipe', 'ignore'] });
     let out = '';
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } };
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} done(null); }, 8000);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { out += chunk; });
-    child.on('error', () => resolve(null));
+    child.on('error', () => done(null));
     child.on('close', (code) => {
-      if (code !== 0) return resolve(null);
-      resolve(parseList(out));
+      if (code !== 0) return done(null);
+      done(parseList(out));
     });
   });
 }
@@ -64,10 +68,13 @@ function kill(pid) {
   return new Promise((resolve) => {
     const child = spawn('/bin/kill', ['-9', String(pid)], { stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } };
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} done({ ok: false, error: 'kill timed out' }); }, 8000);
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk) => { err += chunk; });
-    child.on('error', (e) => resolve({ ok: false, error: e.message || String(e) }));
-    child.on('close', (code) => resolve({ ok: code === 0, error: code === 0 ? '' : err.trim() }));
+    child.on('error', (e) => done({ ok: false, error: e.message || String(e) }));
+    child.on('close', (code) => done({ ok: code === 0, error: code === 0 ? '' : err.trim() }));
   });
 }
 
