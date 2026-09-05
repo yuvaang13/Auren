@@ -991,24 +991,34 @@ async function engageProtection() {
   // not re-engage, or the app exits leaving mode:on persisted and enforced.
   if (quitting) return { ok: false, error: 'quitting', mode: blockState.mode };
   clearOffCooldown();
-  if (!dnsController.isDaemonInstalled() || !dnsController.isDaemonCurrent()) {
-    setDaemonBusy(true);
-    try {
-      const res = await installDaemon();
-      if (!res.ok) {
-        logActivity(activity.makeEntry('toggle', 'on_failed', null, 'background service setup declined'));
-        pushState();
-        return { ok: false, cancelled: !!res.cancelled, error: 'setup', mode: blockState.mode };
-      }
-    } finally {
-      setDaemonBusy(false);
-    }
-  }
+  // Flip protection ON first so the toggle feels instant: local gates
+  // (blocklists, FS guard, command gate, bridge) enforce immediately from
+  // this process. The privileged background service (DNS/pf) then installs
+  // in the background — it used to block the toggle for up to ~35s
+  // (bootout wait + bootstrap retries + heartbeat wait).
+  const needsDaemon = !dnsController.isDaemonInstalled() || !dnsController.isDaemonCurrent();
   blockState.mode = 'on';
   persist();
   logActivity(activity.makeEntry('toggle', 'on'));
   pushState();
-  return { ok: true, mode: 'on' };
+  if (needsDaemon && !daemonBusy) {
+    setDaemonBusy(true);
+    pushState();
+    installDaemon().then((res) => {
+      setDaemonBusy(false);
+      if (!res.ok) {
+        logActivity(activity.makeEntry('toggle', 'on_daemon_pending', null, 'protection ON locally — background service setup ' + (res.cancelled ? 'cancelled' : 'failed') + ', will retry'));
+      } else {
+        logActivity(activity.makeEntry('daemon', 'installed', null, 'background service ready'));
+      }
+      pushState();
+    }).catch((err) => {
+      setDaemonBusy(false);
+      logActivity(activity.makeEntry('toggle', 'on_daemon_pending', null, 'protection ON locally — background service error: ' + (err && err.message)));
+      pushState();
+    });
+  }
+  return { ok: true, mode: 'on', daemonPending: needsDaemon };
 }
 
 // Auto-protect engaged protection because an agent session was detected. Logs

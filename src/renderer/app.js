@@ -566,6 +566,9 @@ async function init() {
         if (r && r.ok) {
           state.mode = r.mode;
           if (r.cooldownUntil) state.modeCooldownUntil = r.cooldownUntil;
+          if (wantOn && r.daemonPending) {
+            showError('mode-error', 'Protection is ON — background service is finishing setup in the background.');
+          }
         } else if (r && r.cancelled) {
           showError('mode-error', wantOn
             ? 'Setup was cancelled. Protection stays off.'
