@@ -4,46 +4,24 @@
 <meta charset="utf-8" />
 <style>
   html, body { margin: 0; padding: 0; width: 1024px; height: 1024px; background: transparent; }
+  .icon {
+    width: 1024px; height: 1024px;
+    border-radius: 232px;
+    background: linear-gradient(180deg, #26272c 0%, #141518 100%);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  .icon img {
+    /* Auren logo.png is bright-green on pure black, so screen blend drops the
+       black and leaves only the mark over the matte background. */
+    width: 730px;
+    mix-blend-mode: screen;
+  }
 </style>
 </head>
 <body>
-  <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
-    <defs>
-      <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#1b212b"/>
-        <stop offset="0.55" stop-color="#101319"/>
-        <stop offset="1" stop-color="#08090b"/>
-      </linearGradient>
-      <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#34d399"/>
-        <stop offset="0.45" stop-color="#0f9f6e"/>
-        <stop offset="1" stop-color="#0f9f6e"/>
-      </linearGradient>
-      <linearGradient id="glassFill" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#34d399" stop-opacity="0.18"/>
-        <stop offset="1" stop-color="#0f9f6e" stop-opacity="0.10"/>
-      </linearGradient>
-      <radialGradient id="glassGlow" cx="0.5" cy="0.15" r="0.6">
-        <stop offset="0" stop-color="#34d399" stop-opacity="0.12"/>
-        <stop offset="1" stop-color="#34d399" stop-opacity="0"/>
-      </radialGradient>
-      <linearGradient id="innerHi" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#ffffff" stop-opacity="0.04"/>
-        <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-      </linearGradient>
-      <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
-        <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.05"/>
-        <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-      </linearGradient>
-    </defs>
-
-    <rect x="0" y="0" width="1024" height="1024" rx="256" fill="url(#bg)"/>
-    <rect x="0" y="0" width="1024" height="1024" rx="256" fill="url(#glass)"/>
-    <rect x="0" y="0" width="1024" height="1024" rx="256" fill="url(#glassFill)"/>
-    <circle cx="512" cy="384" r="180" fill="url(#glassGlow)"/>
-    <path d="M512 400 L512 380 M512 420 L512 400 M420 380 L512 380 L600 380 M420 420 L512 420 L600 420" stroke="#ffffff" stroke-width="1" stroke-opacity="0.4"/>
-    <rect x="400" y="340" width="240" height="80" rx="20" fill="url(#shine)"/>
-  </svg>
+  <!-- Canonical icon source: matte dark squircle + enlarged Auren mark.
+       Render with: node_modules/.bin/electron scripts/make-icon.js -->
+  <div class="icon"><img src="../Auren logo.png" /></div>
 </body>
 </html>
