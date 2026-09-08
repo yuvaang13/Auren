@@ -10,6 +10,8 @@ directories:
   output: release
   buildResources: build
 
+afterPack: scripts/after-pack.js
+
 files:
   - src/**/*
   - package.json
