@@ -7,7 +7,7 @@ Public Beta builds in `release/` are currently **unsigned** and not notarized. Y
 **Symptom:** `“Auren” is damaged and can’t be opened` / `unidentified developer`.
 
 **Fix (recommended):**
-1. Download `auren-0.4.0.dmg` from the GitHub Release.
+1. Download `auren-0.5.0-arm64.dmg` from the GitHub Release.
 2. **Right-click (Ctrl-click) → Open** the app (not double-click) → `Open` in the dialog.
 3. On first toggle ON, macOS will prompt for admin password once to install the background service (`com.auren.guardrail`). Later toggles are instant; turning OFF needs Touch ID / passcode.
 
@@ -24,7 +24,7 @@ Verify daemon: `sudo bash scripts/check-ports.sh` (port 53 + 42792). Check `npm 
 
 **Symptom:** `Windows protected your PC — Unknown publisher`.
 
-**Fix:** Click `More info → Run anyway`. The NSIS installer (`auren-0.4.0-setup.exe`, per-machine) then asks for UAC elevation once to register the `AurenGuardrailDaemon` Scheduled Task. Win Firewall rules are group `Auren`.
+**Fix:** Click `More info → Run anyway`. The NSIS installer (`auren-0.5.0-setup.exe`, per-machine) then asks for UAC elevation once to register the `AurenGuardrailDaemon` Scheduled Task. Win Firewall rules are group `Auren`.
 
 Verify: `Get-NetFirewallRule -Group Auren` and `npm run e2e:check:win`.
 

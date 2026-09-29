@@ -1,6 +1,14 @@
 # Changelog
 
-All notable changes to Auren are documented here. Format follows Keep a Changelog and SemVer. This project is currently **Public Beta** (`0.4.x`).
+All notable changes to Auren are documented here. Format follows Keep a Changelog and SemVer. This project is currently **Public Beta** (`0.5.x`).
+
+## [0.5.0] — 2026-09-29 — Local Agent Detection
+
+### Added
+- **Local Agent Detection (Beta):** fully offline, deterministic automation detection (`src/core/agent-detection/`) — process monitor with tree tracking, local signature database (Claude, Codex, OpenCode, Cursor, Windsurf, Aider, Goose, Gemini CLI), macOS accessibility/automation monitoring (no screenshots), metadata-only programmatic-input monitoring, rolling behavior analysis, transparent decaying score (NORMAL / SUSPICIOUS / LIKELY_AUTOMATION / HIGH_CONFIDENCE_AGENT) with inspectable evidence.
+- **Automation policy:** detections map to ALLOW / WARN / REQUIRE_APPROVAL / BLOCK; sensitive operations escalate one step; local approval dialog (Allow Once / Deny / Always Allow / Always Block). Detection advises — the policy engine decides.
+- **Agent Detection status card** in the app with live score, policy action, and evidence list.
+- No cloud, ML model, LLM calls, telemetry, keystroke logging, or screen capture anywhere in the detector.
 
 ## [0.4.0] — 2026-09-03 — Public Beta
 
