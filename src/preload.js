@@ -38,6 +38,11 @@ contextBridge.exposeInMainWorld('auren', {
   reinstallDaemon: () => ipcRenderer.invoke('daemon:reinstall'),
   clearRecovery: () => ipcRenderer.invoke('daemon:clear-recovery'),
   checkPorts: () => ipcRenderer.invoke('daemon:check-ports'),
+  // — AgentDetection (local, deterministic) —
+  getDetection: () => ipcRenderer.invoke('detection:get'),
+  inspectAutomation: (payload) => ipcRenderer.invoke('agent:inspect-automation', payload),
+  decideDetection: (payload) => ipcRenderer.invoke('detection:decide', payload),
+  onDetectionApproval: (cb) => ipcRenderer.on('detection:approval', (_event, req) => cb(req)),
   onChange: (cb) => ipcRenderer.on('state', (_event, state) => cb(state)),
   onAutoProtectPrompt: (cb) => ipcRenderer.on('autoprotect:prompt', (_event, tools) => cb(tools))
 });

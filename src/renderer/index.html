@@ -545,6 +545,51 @@
           <div class="card" style="margin-top:16px">
             <div class="card-head">
               <div class="card-head-left">
+                <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 3.5l8 2.6v5.4c0 4.4-3 8.1-8 9.7-5-1.6-8-5.3-8-9.7V6.1l8-2.6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12l2 2 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                <h2>Agent Detection</h2>
+              </div>
+              <span class="control-pill" id="detection-pill">—</span>
+            </div>
+            <p class="note" style="margin-top:0">Local, deterministic automation detection — no cloud, no ML, no screen capture. Evidence only; the policy engine decides what to do.</p>
+            <div class="sandbox-grid">
+              <div class="sandbox-tile">
+                <span class="sandbox-tile-label">Status</span>
+                <span class="sandbox-tile-value" id="detection-status">—</span>
+                <span class="sandbox-tile-sub" id="detection-score-sub">score 0</span>
+              </div>
+              <div class="sandbox-tile">
+                <span class="sandbox-tile-label">Policy action</span>
+                <span class="sandbox-tile-value" id="detection-action">—</span>
+                <span class="sandbox-tile-sub" id="detection-reason-sub">—</span>
+              </div>
+            </div>
+            <div class="sandbox-entitlements">
+              <h3>Recent activity</h3>
+              <ul id="detection-evidence" class="activity-list"></ul>
+              <div class="empty hidden" id="detection-empty">
+                <span class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.4" opacity="0.35"/></svg></span>
+                <span>No automation detected.</span>
+              </div>
+            </div>
+          </div>
+
+          <div id="detection-approval" class="alert-card alert-card--prompt hidden" role="alertdialog" aria-labelledby="detection-approval-title">
+            <div>
+              <strong id="detection-approval-title">Auren detected automated computer activity.</strong>
+              <p id="detection-approval-reason" class="autoprotect-tools"></p>
+              <p id="detection-approval-op" class="note"></p>
+            </div>
+            <div class="autoprotect-actions">
+              <button class="primary primary--sm" id="detection-allow-once" type="button">Allow Once</button>
+              <button class="ghost" id="detection-deny" type="button">Deny</button>
+              <button class="ghost" id="detection-always-allow" type="button">Always Allow</button>
+              <button class="ghost" id="detection-always-block" type="button">Always Block</button>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:16px">
+            <div class="card-head">
+              <div class="card-head-left">
                 <span class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 7.5V12l3 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
                 <h2>Blocked system calls — live</h2>
               </div>

@@ -88,6 +88,8 @@ const appResolver = require('./platform/app-resolver');
 const { requireAuthentication, requireNativeAuth } = require('./platform/biometrics');
 const procs = require('./platform/procs');
 const shield = require('./core/shield');
+const policy = require('./core/policy');
+const agentDetection = require('./core/agent-detection');
 const paths = require('./platform/paths');
 const fsguard = require('./core/fsguard');
 const sandbox = require('./platform/sandbox');
@@ -232,6 +234,135 @@ let autoProtectSeenPids = new Set();
 let autoProtectFastTimer = null;
 let autoProtectFastMode = false;
 let autoProtectStartedAt = 0;
+
+// AgentDetection subsystem (local, deterministic, offline — see
+// src/core/agent-detection/). Feeds the same `procs` snapshots auto-protect
+// uses through the DetectionEngine; the policy engine (core/policy.js
+// decideAutomationPolicy) turns evidence into ALLOW/WARN/REQUIRE_APPROVAL/
+// BLOCK. Detection provides context only — it never blocks by itself.
+const DETECTION_POLL_MS = 2000;
+let detectionEngine = agentDetection.createDetectionEngine();
+let lastDetection = { timestamp: new Date().toISOString(), level: 'NORMAL', score: 0, evidence: [] };
+let lastDetectionAction = { action: 'ALLOW', reason: 'automation level NORMAL', level: 'NORMAL', score: 0, evidence: [] };
+let lastDetectionJson = '';
+let detectionBusy = false;
+let detectionApprovals = []; // pending REQUIRE_APPROVAL requests (newest last)
+let detectionApprovalSeq = 0;
+
+// Structured local debug log for detection (plan §13). Metadata only — never
+// keystroke contents, passwords, documents, screenshots, or clipboard.
+function detectionLog(line) {
+  try {
+    const s = readSettings();
+    const debug = !!(s.agentDetection && s.agentDetection.debug);
+    if (!debug) return;
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    // eslint-disable-next-line no-console
+    console.log(`[${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}] ${line}`);
+  } catch { /* best-effort */ }
+}
+
+function automationPolicyRules() {
+  try {
+    const s = readSettings().automationPolicy;
+    return (s && typeof s === 'object') ? s : undefined;
+  } catch { return undefined; }
+}
+
+// Poll: run one DetectionEngine update over the live process table, map the
+// DetectionEvent through the policy engine, and surface approvals.
+async function checkDetection() {
+  if (detectionBusy || quitting) return;
+  detectionBusy = true;
+  try {
+    // Rebuild engine signatures when user config changes (cheap: only when
+    // the JSON actually changed).
+    let sigRaw;
+    try { sigRaw = readSettings().agentDetection; } catch { sigRaw = undefined; }
+    const sigJson = JSON.stringify((sigRaw && sigRaw.knownAgents) || []);
+    if (sigJson !== checkDetection._sigJson) {
+      checkDetection._sigJson = sigJson;
+      detectionEngine = agentDetection.createDetectionEngine({
+        signatures: sigRaw,
+        debug: false,
+      });
+      lastDetectionJson = '';
+    }
+    const list = await procs.list();
+    if (!list) return;
+    const { events: evts, detection } = detectionEngine.update(list);
+    for (const e of evts) {
+      if (e.type === 'ProcessStarted') detectionLog(`ProcessStarted: ${String((e.exe || '').split(/[\\/]/).pop())}`);
+      else if (e.type === 'AutomationAccessObserved' || e.type === 'AutomationAccessStarted') detectionLog(`AutomationAccessObserved: ${(e.source && (e.source.name || e.source.exe)) || '?'} → ${e.targetApplication || 'app'}`);
+      else if (e.type === 'ProgrammaticInputObserved') detectionLog('ProgrammaticInputDetected');
+      else if (e.type === 'AutomationPatternObserved') detectionLog(`AutomationPattern: ${e.pattern}`);
+    }
+    lastDetection = detection;
+    const sensitiveOp = blockState.mode === 'on';
+    const decision = policy.decideAutomationPolicy(detection, {
+      sensitiveOperation: sensitiveOp && detection.level !== 'NORMAL',
+      degraded: degraded || blockState.failClosed,
+      rules: automationPolicyRules(),
+    });
+    // Honor always-allow / always-block lists from prior approval choices.
+    const allowAlways = (((readSettings().agentDetection || {}).allowAlways) || []);
+    const blockAlways = (((readSettings().agentDetection || {}).blockAlways) || []);
+    const evText = (detection.evidence || []).join(' ').toLowerCase();
+    if (blockAlways.some((n) => n && evText.includes(String(n).toLowerCase()))) {
+      decision.action = 'BLOCK';
+      decision.reason = 'matched always-block list';
+    } else if (allowAlways.some((n) => n && evText.includes(String(n).toLowerCase()))) {
+      decision.action = 'ALLOW';
+      decision.reason = 'matched always-allow list';
+    }
+    lastDetectionAction = decision;
+    detectionLog(`DetectionScore: ${detection.score}`);
+    detectionLog(`DetectionLevel: ${detection.level} → ${decision.action}`);
+    const json = JSON.stringify({ level: detection.level, score: detection.score, action: decision.action });
+    const changed = json !== lastDetectionJson;
+    lastDetectionJson = json;
+    if (changed) {
+      logActivity(activity.makeEntry('daemon', 'detection_' + detection.level.toLowerCase(), null,
+        `score ${detection.score} → ${decision.action}: ${(detection.evidence || []).slice(0, 3).join('; ').slice(0, 220)}`));
+      pushState();
+    }
+    // Human approval flow (plan §10): local notification + renderer dialog.
+    // Only for REQUIRE_APPROVAL/BLOCK transitions, throttled to one pending.
+    if ((decision.action === 'REQUIRE_APPROVAL' || decision.action === 'BLOCK') && changed) {
+      const pending = {
+        id: ++detectionApprovalSeq,
+        ts: new Date().toISOString(),
+        level: detection.level,
+        score: detection.score,
+        evidence: (detection.evidence || []).slice(),
+        action: decision.action,
+        operation: sensitiveOp ? 'sensitive operation while protection is ON' : 'automated computer activity',
+      };
+      detectionApprovals.push(pending);
+      while (detectionApprovals.length > 5) detectionApprovals.shift();
+      if (Notification.isSupported()) {
+        try {
+          new Notification({
+            title: 'Auren detected automated computer activity',
+            body: (detection.evidence || []).slice(0, 3).join('\n').slice(0, 240) || 'Review in Auren.',
+          }).show();
+        } catch { /* ignore */ }
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('detection:approval', pending);
+      }
+    }
+  } finally {
+    detectionBusy = false;
+  }
+}
+
+function startDetection() {
+  checkDetection._sigJson = null;
+  checkDetection();
+  setInterval(checkDetection, DETECTION_POLL_MS);
+}
 
 function clearOffCooldown() {
   if (offCooldownTimer) { clearTimeout(offCooldownTimer); offCooldownTimer = null; }
@@ -687,6 +818,15 @@ function getState() {
     keystrokeShield: shield.keystrokeShieldActive(blockState),
     agentBridge: bridgeInfo,
     autoProtect: autoProtectState(),
+    detection: {
+      level: lastDetection.level,
+      score: lastDetection.score,
+      evidence: (lastDetection.evidence || []).slice(),
+      timestamp: lastDetection.timestamp,
+      action: lastDetectionAction.action,
+      reason: lastDetectionAction.reason,
+      pending: detectionApprovals.slice(-5),
+    },
     fsGuard: fsguard.normalizePolicy(blockState.fsGuard),
     sandbox: sandbox.getStatus(),
     lock: blockState.lock
@@ -1331,6 +1471,62 @@ ipcMain.handle('settings:ignore-agent-tool', (_e, tool) => {
   return { ok: true, autoProtect: next };
 });
 
+/* ----------------------- AgentDetection IPC ----------------------- */
+
+// Read-only detection snapshot for the status view + evidence display.
+ipcMain.handle('detection:get', () => ({
+  level: lastDetection.level,
+  score: lastDetection.score,
+  evidence: (lastDetection.evidence || []).slice(),
+  timestamp: lastDetection.timestamp,
+  action: lastDetectionAction.action,
+  reason: lastDetectionAction.reason,
+  pending: detectionApprovals.slice(-5),
+}));
+
+// Policy checkpoint: route a requested operation through the automation
+// policy. Detection supplies evidence; this decides ALLOW/WARN/
+// REQUIRE_APPROVAL/BLOCK. Local only.
+ipcMain.handle('agent:inspect-automation', (_e, payload) => {
+  const sensitiveOp = !!(payload && payload.sensitiveOperation);
+  const decision = policy.decideAutomationPolicy(lastDetection, {
+    sensitiveOperation: sensitiveOp,
+    degraded: degraded || blockState.failClosed,
+    rules: automationPolicyRules(),
+  });
+  logActivity(activity.makeEntry('command', decision.action === 'ALLOW' ? 'allowed' : 'blocked', null,
+    `automation gate ${decision.action}: level ${decision.level} score ${decision.score}`));
+  pushState();
+  return decision;
+});
+
+// Human approval flow (plan §10): Allow Once / Deny / Always Allow /
+// Always Block. Local only — nothing leaves the machine.
+ipcMain.handle('detection:decide', (_e, payload) => {
+  const id = payload && payload.id;
+  const choice = String((payload && payload.choice) || '').toLowerCase();
+  const idx = detectionApprovals.findIndex((p) => p.id === id);
+  if (idx === -1) return { ok: false, error: 'unknown approval request' };
+  const [req] = detectionApprovals.splice(idx, 1);
+  const label = ((req.evidence || [])[0] || '').replace(/^Known agent process detected:\s*/i, '').trim() || 'automation';
+  const cur = readSettings().agentDetection || {};
+  if (choice === 'always-allow') {
+    const allowAlways = Array.from(new Set([...(cur.allowAlways || []), label]));
+    writeSettings({ agentDetection: Object.assign({}, cur, { allowAlways }) });
+    logActivity(activity.makeEntry('daemon', 'detection_allowed', null, 'always allow: ' + label));
+  } else if (choice === 'always-block') {
+    const blockAlways = Array.from(new Set([...(cur.blockAlways || []), label]));
+    writeSettings({ agentDetection: Object.assign({}, cur, { blockAlways }) });
+    logActivity(activity.makeEntry('daemon', 'detection_blocked', null, 'always block: ' + label));
+  } else if (choice === 'allow') {
+    logActivity(activity.makeEntry('daemon', 'detection_allowed', null, 'allowed once: score ' + req.score));
+  } else {
+    logActivity(activity.makeEntry('daemon', 'detection_blocked', null, 'denied: score ' + req.score));
+  }
+  pushState();
+  return { ok: true, choice };
+});
+
 /* ----------------------- File System Guard IPC ----------------------- */
 
 // Pick a workspace directory via OS dialog — creates a restricted Virtual Mount Point.
@@ -1557,6 +1753,7 @@ if (!gotLock) {
     startPolling();
     startWatchdog();
     startAutoProtect();
+    startDetection();
     startAgentBridge();
     refreshDaemonIfStale();
     app.on('activate', () => {

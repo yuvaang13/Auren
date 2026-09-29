@@ -9,6 +9,7 @@ let state = {
   modeCooldownUntil: 0, degraded: false, terminalBlock: true, dohBlock: true,
   vmsDetected: [], settingsTampered: false, keystrokeShield: false,
   autoProtect: { enabled: true, engagedBy: [] },
+  detection: { level: 'NORMAL', score: 0, evidence: [], action: 'ALLOW' },
   fsGuard: { mounts: [], defaultDeny: true },
   sandbox: { profile: {}, events: [] }
 };
@@ -304,6 +305,9 @@ function render() {
   // — Sandbox —
   renderSandbox();
 
+  // — Agent Detection (local, deterministic) —
+  renderDetection();
+
   // — Activity —
   const act = $('activity-list');
   if (act) {
@@ -360,6 +364,53 @@ function renderFsGuard() {
     div.append(btn);
     box.append(div);
   }
+}
+
+function renderDetection() {
+  const d = state.detection || { level: 'NORMAL', score: 0, evidence: [], action: 'ALLOW' };
+  const pill = $('detection-pill');
+  if (pill) {
+    pill.textContent = d.level === 'NORMAL' ? 'NORMAL' : d.level.replace(/_/g, ' ');
+    pill.className = 'control-pill ' + (d.level === 'NORMAL' ? 'on' : d.level === 'SUSPICIOUS' ? 'warn' : 'off');
+  }
+  const status = $('detection-status');
+  if (status) {
+    status.textContent = d.level === 'NORMAL' ? '● No automation detected'
+      : d.level === 'DETECTION_UNAVAILABLE' ? '● Detection unavailable'
+      : '● ' + d.level.replace(/_/g, ' ');
+  }
+  const scoreSub = $('detection-score-sub');
+  if (scoreSub) scoreSub.textContent = 'score ' + (d.score || 0);
+  const actionEl = $('detection-action');
+  if (actionEl) actionEl.textContent = d.action || 'ALLOW';
+  const reasonEl = $('detection-reason-sub');
+  if (reasonEl) reasonEl.textContent = d.reason || '—';
+  const list = $('detection-evidence');
+  const empty = $('detection-empty');
+  if (list) {
+    list.textContent = '';
+    const ev = d.evidence || [];
+    if (empty) empty.classList.toggle('hidden', ev.length > 0);
+    for (const item of ev.slice(-8).reverse()) {
+      const li = document.createElement('li');
+      li.className = 'activity-item kind-daemon';
+      li.innerHTML = '<span class="activity-marker"></span><span class="activity-text"></span>';
+      li.querySelector('.activity-text').textContent = item;
+      list.append(li);
+    }
+  }
+}
+
+let pendingDetectionId = null;
+function showDetectionApproval(req) {
+  if (!req) return;
+  pendingDetectionId = req.id;
+  const box = $('detection-approval');
+  if (box) box.classList.remove('hidden');
+  const reason = $('detection-approval-reason');
+  if (reason) reason.textContent = 'Reason:\n- ' + (req.evidence || []).slice(0, 4).join('\n- ');
+  const op = $('detection-approval-op');
+  if (op) op.textContent = 'Requested action: ' + (req.operation || 'automated computer activity') + ' (score ' + req.score + ', ' + req.level + ')';
 }
 
 function renderSandbox() {
@@ -707,6 +758,26 @@ async function init() {
     if (p) p.classList.remove('hidden');
   });
 
+  // AgentDetection approval flow (local only)
+  if (api.onDetectionApproval) {
+    api.onDetectionApproval((req) => showDetectionApproval(req));
+  }
+  const decide = async (choice) => {
+    if (pendingDetectionId == null) return;
+    try { await api.decideDetection({ id: pendingDetectionId, choice }); } catch { /* best-effort */ }
+    pendingDetectionId = null;
+    const box = $('detection-approval');
+    if (box) box.classList.add('hidden');
+  };
+  const bindDecide = (id, choice) => {
+    const el = $(id);
+    if (el) el.addEventListener('click', () => decide(choice));
+  };
+  bindDecide('detection-allow-once', 'allow');
+  bindDecide('detection-deny', 'deny');
+  bindDecide('detection-always-allow', 'always-allow');
+  bindDecide('detection-always-block', 'always-block');
+
   const addForm = $('add-form');
   if (addForm) {
     addForm.addEventListener('submit', async (ev) => {
@@ -860,6 +931,7 @@ async function init() {
     // ensure defaults for new fields
     state.fsGuard = state.fsGuard || { mounts: [] };
     state.sandbox = state.sandbox || { profile: {}, events: [] };
+    state.detection = state.detection || { level: 'NORMAL', score: 0, evidence: [], action: 'ALLOW' };
     render();
   });
 
