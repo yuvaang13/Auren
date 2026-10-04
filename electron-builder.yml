@@ -35,6 +35,14 @@ win:
     - target: nsis
       arch:
         - x64
+    - target: portable
+      arch:
+        - x64
+
+# No auto-updater in beta — don't emit update manifests (latest-*.yml)
+# until an update feed exists. Prevents orphaned latest-mac.yml entries
+# pointing at artifacts that were never published.
+publish: null
 
 nsis:
   oneClick: false
@@ -44,4 +52,5 @@ nsis:
   artifactName: ${productName}-${version}-setup.${ext}
 
 dmg:
-  artifactName: ${productName}-${version}.${ext}
+  # Per-arch names so x64 + arm64 builds never collide on one filename.
+  artifactName: ${productName}-${version}-${arch}.${ext}

@@ -24,7 +24,12 @@ Verify daemon: `sudo bash scripts/check-ports.sh` (port 53 + 42792). Check `npm 
 
 **Symptom:** `Windows protected your PC — Unknown publisher`.
 
-**Fix:** Click `More info → Run anyway`. The NSIS installer (`auren-0.5.0-setup.exe`, per-machine) then asks for UAC elevation once to register the `AurenGuardrailDaemon` Scheduled Task. Win Firewall rules are group `Auren`.
+**Beta builds ship as a portable `.zip`** (`auren-<version>-win-portable.zip`):
+1. Unzip and run `auren.exe`.
+2. If SmartScreen blocks it, click `More info → Run anyway`.
+3. On first toggle ON, allow the UAC elevation once to register the `AurenGuardrailDaemon` Scheduled Task. Win Firewall rules are group `Auren`.
+
+A per-machine NSIS installer (`auren-<version>-setup.exe`, see `nsis.perMachine` in `electron-builder.yml`) is built from a Windows runner / release job — if the current GitHub Release has no `-setup.exe` yet, use the portable `.zip` above.
 
 Verify: `Get-NetFirewallRule -Group Auren` and `npm run e2e:check:win`.
 

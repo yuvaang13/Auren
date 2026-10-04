@@ -32,5 +32,14 @@ jobs:
       - name: Audit production dependencies (moderate+)
         run: npm audit --production --audit-level=moderate
 
+      - name: Secret scan (no hardcoded tokens/keys)
+        run: |
+          ! grep -rEn --include='*.js' --exclude-dir=node_modules \
+            -e 'ghp_[A-Za-z0-9]{20,}' -e 'gho_[A-Za-z0-9]{20,}' \
+            -e 'sk-live-[A-Za-z0-9]{10,}' -e 'AKIA[0-9A-Z]{16}' \
+            -e 'xox[baprs]-[A-Za-z0-9-]{10,}' \
+            src scripts test || exit 1
+          echo "secret scan clean"
+
       - name: Dry-run packaging (no sign/publish, just buildability)
         run: npx electron-builder --dir --publish never

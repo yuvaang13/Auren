@@ -1,6 +1,6 @@
 # Privacy Policy — Auren (Public Beta)
 
-**Effective:** 2026-09-03 · **Scope:** Local desktop app `auren-guardrail@0.4.0` (no SaaS).
+**Effective:** 2026-09-29 · **Scope:** Local desktop app `auren-guardrail@0.5.0` (no SaaS).
 
 Auren is **zero-knowledge, local-only.** No blocklists, mounts, paths, or activity data are collected or transmitted.
 
