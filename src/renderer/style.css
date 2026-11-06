@@ -567,6 +567,45 @@ main {
   background: linear-gradient(90deg, transparent, rgba(255,255,255,0.07) 18%, rgba(255,255,255,0.07) 82%, transparent);
 }
 
+/* At-a-glance value: makes the product promise legible before configuration. */
+.coverage-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 4px 2px;
+}
+.coverage-intro { display: flex; flex-direction: column; gap: 2px; min-width: 156px; }
+.coverage-kicker {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+.coverage-copy { color: var(--ink-2); font-size: 12.5px; font-weight: 500; line-height: 1.4; }
+.coverage-items { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
+.coverage-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid rgba(255,255,255,0.065);
+  border-radius: var(--radius-pill);
+  background: rgba(255,255,255,0.028);
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.coverage-icon { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px rgba(46,229,160,0.09); }
+.coverage-icon--apps { background: #8b7dff; box-shadow: 0 0 0 3px rgba(139,125,255,0.1); }
+.coverage-icon--files { background: #ffd07a; box-shadow: 0 0 0 3px rgba(240,180,41,0.1); }
+.coverage-icon--runtime { background: #7dcfff; box-shadow: 0 0 0 3px rgba(125,207,255,0.1); }
+
 .settings-row {
   display: flex; align-items: center; gap: 14px;
   margin-top: 14px;
@@ -630,6 +669,8 @@ main {
   .hero-inner { padding: 18px 16px 14px; }
   .hero-title h1 { font-size: 24px; }
   .shield-wrap { width: 56px; height: 56px; }
+  .coverage-strip { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .coverage-items { justify-content: flex-start; }
 }
 
 /* ── cards — premium glass ── */

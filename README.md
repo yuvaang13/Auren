@@ -2,12 +2,33 @@
 
 > **Public Beta (v0.5.0)** — Local desktop app. Builds in `release/` are currently **unsigned** (see [`docs/INSTALL_UNSIGNED.md`](docs/INSTALL_UNSIGNED.md) for the Gatekeeper / SmartScreen steps) and have no auto-updater yet. See [`CHANGELOG.md`](CHANGELOG.md).
 
+<p align="center">
+  <a href="https://github.com/yuvaang13/Auren-Guardrail-for-AI-agents/releases"><strong>Download the public beta →</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="docs/INSTALL_UNSIGNED.md">Install guide</a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#what-this-actually-does">See how it works</a>
+</p>
+
+<p align="center">
+  <strong>Local-first.</strong> No account. No telemetry. Protection stays on your machine.
+</p>
+
 A desktop app that protects your whole computer from AI-agent overreach.
 Flip **Protection Mode** on and Auren blocks the websites, apps, and
 OS-level network access you don't want any agent to touch — in every
 browser, every app, and the terminal — from one switch. Turning it off
 (or quitting the app) requires your fingerprint or device passcode, so an
 agent can't quietly undo it.
+
+<table>
+  <tr>
+    <td width="25%" align="center"><strong>System-wide</strong><br><sub>Works across browsers, apps, and the terminal.</sub></td>
+    <td width="25%" align="center"><strong>Biometric-gated</strong><br><sub>Only you can lower the guardrail.</sub></td>
+    <td width="25%" align="center"><strong>Fail-closed</strong><br><sub>Unverifiable enforcement refuses by default.</sub></td>
+    <td width="25%" align="center"><strong>Private by design</strong><br><sub>Policy and telemetry stay local.</sub></td>
+  </tr>
+</table>
 
 > Auren is a practical guardrail for everyday AI-agent sessions — and like
 > any tool that runs on the machine it protects, its honest limits are
